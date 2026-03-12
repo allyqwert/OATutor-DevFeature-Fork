@@ -32,7 +32,7 @@ jobs:
       - uses: actions/setup-node@v2.4.1
 
       - name: Change homepage in package.json
-        run: sed -i 's/place-holder/OATutor/g' package.json
+        run: sed -i 's/place-holder/OATutor-DevFeature-Fork/g' package.json
 
       - name: Cache node modules
         uses: actions/cache@v3
@@ -54,6 +54,7 @@ jobs:
         run: npm run build
         env:
           REACT_APP_FIREBASE_CONFIG: ${{ secrets.STAGING_FIREBASE_CONFIG }}
+          REACT_APP_AI_AGENT_URL: ${{ secrets.REACT_APP_AI_AGENT_URL }}
           CI: false
           REACT_APP_BUILD_TYPE: "production"
           REACT_APP_COMMIT_HASH: ${{ github.sha }}
