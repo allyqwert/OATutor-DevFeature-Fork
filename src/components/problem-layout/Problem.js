@@ -93,6 +93,7 @@ class Problem extends React.Component {
             ttsPlaying: false,
             ttsPlayingStep: -1,
             metaCollapsed: false,
+            hintUsageByStep: {}, // { [stepIndex]: { stepId, hints: [{ id, title, text, type, viewed }] } }
         };
 
         this.togglePopup = this.togglePopup.bind(this);
@@ -120,58 +121,16 @@ class Problem extends React.Component {
         for (const annotation of document.querySelectorAll("annotation")) {
             annotation.ariaLabel = annotation.textContent;
         }
-
-        if (this.enableTTS) this._loadTTSAudio(this.props.problem);
     }
 
-    componentDidUpdate(prevProps) {
-        if (this.enableTTS && prevProps.problem?.id !== this.props.problem?.id) {
-            this._loadTTSAudio(this.props.problem);
-        }
-    }
-
-    _loadTTSAudio(problem) {
-        if (!problem) return;
-
-        // 停止并重置所有旧的 player
-        if (this.ttsPlayer) {
-            this.ttsPlayer.destroy();
-            this.ttsPlayer = new TTSPlayer();
-            this.ttsPlayer.onStateChange((playing) => this.setState({ ttsPlaying: playing }));
-        }
-        Object.values(this.stepTTSPlayers).forEach(p => p.destroy());
-        this.stepTTSPlayers = {};
-        this.setState({ ttsPlaying: false, ttsPlayingStep: -1 });
-
-        // 加载大题音频
-        this.ttsPlayer.onReady(() => this.forceUpdate());
-        let segments;
-        if (problem.pacedSpeech && Array.isArray(problem.pacedSpeech) && problem.pacedSpeech.length > 0) {
-            segments = problem.pacedSpeech;
-        } else {
-            const raw = textToReadable((problem.title || "") + ". " + (problem.body || ""));
-            if (raw && raw !== ".") segments = [raw];
-        }
-        if (segments) this.ttsPlayer.fetchAudio(segments);
-
-        // 加载每个 step 音频
-        (problem.steps || []).forEach((step, idx) => {
-            let stepSegments = null;
-            if (step.pacedSpeech && Array.isArray(step.pacedSpeech) && step.pacedSpeech.length > 0) {
-                stepSegments = step.pacedSpeech;
-            } else {
-                const raw = textToReadable((step.stepTitle || "") + ". " + (step.stepBody || ""));
-                if (raw && raw !== ".") stepSegments = [raw];
-            }
-            if (stepSegments) {
-                const player = new TTSPlayer();
-                player.onStateChange((playing) => this.setState({ ttsPlayingStep: playing ? idx : -1 }));
-                player.onReady(() => this.forceUpdate());
-                this.stepTTSPlayers[idx] = player;
-                player.fetchAudio(stepSegments);
-            }
-        });
-    }
+    handleHintUsageChange = (stepIndex, usage) => {
+        this.setState((prevState) => ({
+            hintUsageByStep: {
+                ...prevState.hintUsageByStep,
+                [stepIndex]: usage,
+            },
+        }));
+    };
 
     componentWillUnmount() {
         document["oats-meta-courseName"] = "";
@@ -870,10 +829,11 @@ class Problem extends React.Component {
                                                     giveDynamicHint={this.giveDynamicHint}
                                                     prompt_template={this.prompt_template}
                                                     showCardHeader={false}
-                                                    hintToggleTrigger={hideHintPanel ? undefined : this.state.hintToggleTrigger}
-                                                    hintToggleIndex={hideHintPanel ? undefined : this.state.hintToggleIndex}
-                                                    hintPortalTarget={hideHintPanel ? undefined : this.hintPortalRef}
-                                                    onHintToggle={hideHintPanel ? undefined : this.handleHintToggleFromStep}
+                                                    hintToggleTrigger={this.state.hintToggleTrigger}
+                                                    hintToggleIndex={this.state.hintToggleIndex}
+                                                    hintPortalTarget={this.hintPortalRef}
+                                                    onHintToggle={this.handleHintToggleFromStep}
+                                                    onHintUsageChange={this.handleHintUsageChange}
                                                 />
                                         </Accordion>
                                     </Element>
@@ -1332,6 +1292,7 @@ class Problem extends React.Component {
                         attemptHistory={this.state.attemptHistory}
                         user={this.props.user}
                         lessonMasteryMap={this.props.lessonMasteryMap}
+                        hintUsageByStep={this.state.hintUsageByStep}
                     />
                 )}
             </>
