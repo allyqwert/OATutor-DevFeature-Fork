@@ -14,6 +14,11 @@ export class AgentHelper {
         this.sessionId = null;
     }
 
+    debugLog(...args) {
+        // eslint-disable-next-line no-console
+        console.log('[artifact-debug]', ...args);
+    }
+
     /**
      * Initialize a new agent session
      * Creates unique session ID for conversation history tracking
@@ -26,12 +31,13 @@ export class AgentHelper {
     /**
      * Build request payload from Problem.js and ProblemCard.js
      */
-    buildAgentRequest(userMessage, problemContext, studentState) {
+    buildAgentRequest(userMessage, problemContext, studentState, extracted = null) {
         const request = {
             sessionId: this.sessionId,
             userMessage: userMessage,
             problemContext: problemContext,
             studentState: studentState,
+            extracted: extracted,
             conversationHistory: []  // Lambda loads from DynamoDB
         };
 
@@ -46,7 +52,7 @@ export class AgentHelper {
      * @param {object} studentState - Student state from Problem.js
      * @param {object} callbacks - { onChunkReceived, onSuccessfulCompletion, onError }
      */
-    async sendMessage(userMessage, problemContext, studentState, callbacks = {}) {
+    async sendMessage(userMessage, problemContext, studentState, callbacks = {}, extracted = null) {
         const {
             onChunkReceived = () => {},
             onSuccessfulCompletion = () => {},
@@ -65,7 +71,7 @@ export class AgentHelper {
             }
 
             // Build request
-            const agentRequest = this.buildAgentRequest(userMessage, problemContext, studentState);
+            const agentRequest = this.buildAgentRequest(userMessage, problemContext, studentState, extracted);
 
             // Send POST request with streaming
             const response = await fetch(this.agentEndpoint, {
@@ -84,6 +90,8 @@ export class AgentHelper {
             const reader = response.body.getReader();
             const decoder = new TextDecoder();
             let fullResponse = '';
+            let buffer = '';
+            let artifactDecision = null;
 
             while (true) {
                 const { done, value } = await reader.read();
@@ -94,10 +102,14 @@ export class AgentHelper {
 
                 // Decode chunk
                 const chunk = decoder.decode(value, { stream: true });
-                
+
                 // Parse JSON chunks (Lambda sends newline-delimited JSON)
-                const lines = chunk.split('\n').filter(line => line.trim());
-                
+                buffer += chunk;
+                const parts = buffer.split('\n');
+                buffer = parts.pop() || '';
+
+                const lines = parts.filter(line => line.trim());
+
                 for (const line of lines) {
                     try {
                         const data = JSON.parse(line);
@@ -109,7 +121,25 @@ export class AgentHelper {
                             // Call chunk callback for real-time UI update
                             onChunkReceived(fullResponse);
                         } else if (data.type === 'complete') {
-                            // Response complete
+                            // Response complete, may include artifact decision
+                            if (typeof data.fullResponse === 'string') {
+                                fullResponse = data.fullResponse;
+                            }
+                            if (data.artifactDecision) {
+                                artifactDecision = data.artifactDecision;
+                            }
+                            this.debugLog('stream:complete', {
+                                hasArtifactDecision: !!data.artifactDecision,
+                                enabled: data.artifactDecision?.enable_interactive_artifact,
+                                hasPlan: !!data.artifactDecision?.artifact_plan,
+                                title: data.artifactDecision?.artifact_plan?.title,
+                                vars: Array.isArray(data.artifactDecision?.artifact_plan?.variables)
+                                    ? data.artifactDecision.artifact_plan.variables.length
+                                    : 0,
+                                elements: Array.isArray(data.artifactDecision?.artifact_plan?.elements)
+                                    ? data.artifactDecision.artifact_plan.elements.length
+                                    : 0
+                            });
                         } else if (data.type === 'error') {
                             throw new Error(data.error || 'Unknown error from agent');
                         }
@@ -120,7 +150,7 @@ export class AgentHelper {
             }
 
             // Call completion callback
-            onSuccessfulCompletion(fullResponse);
+            onSuccessfulCompletion(fullResponse, artifactDecision);
             return fullResponse;
 
         } catch (error) {

@@ -10,7 +10,7 @@
                 "name": "Lesson 1.1",
                 "topics": "Introduction to Whole Numbers",
                 "allowRecycle": true,
-                "enable_ai_chat": true,
+                "enable_ai_chat": false,
                 "learningObjectives": {
                     "find_prime_factorizations_and_least_common_multiples": 0.85,
                     "identify_multiples_and_apply_divisibility_tests": 0.85,
@@ -1563,7 +1563,7 @@
                 "name": "Lesson 11.1",
                 "topics": "Distance and Midpoint Formulas; Circles",
                 "allowRecycle": true,
-                "enable_ai_chat": false,
+                "enable_ai_chat": true,
                 "learningObjectives": {
                     "use_the_distance_formula": 0.85,
                     "use_the_midpoint_formula": 0.85,

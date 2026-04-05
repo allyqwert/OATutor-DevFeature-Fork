@@ -1,6 +1,7 @@
 import React from 'react';
 import { agentHelper } from './AgentHelper';
 import MessageRenderer from './MessageRenderer';
+import ArtifactRenderer from './InteractiveArtifacts/ArtifactRenderer';
 import { withStyles } from '@material-ui/core/styles';
 import {
     Card,
@@ -308,6 +309,7 @@ class AgentChatbox extends React.Component {
         // Get context from props
         const problemContext = this.getProblemContext();
         const studentState = this.getStudentState();
+        const extracted = this.extractConceptExplorationInput(userMessage, problemContext);
 
         const assistantMessageId = `assistant-${messageId}`;
 
@@ -327,11 +329,12 @@ class AgentChatbox extends React.Component {
                             )
                         }));
                     },
-                    onSuccessfulCompletion: (fullResponse) => {
+                    onSuccessfulCompletion: (fullResponse, artifactDecision) => {
+                        const normalizedDecision = this.normalizeArtifactDecision(artifactDecision);
                         this.setState(prevState => ({
                             messages: prevState.messages.map(msg =>
                                 msg.id === assistantMessageId
-                                    ? { ...msg, content: fullResponse, isGenerating: false }
+                                    ? { ...msg, content: fullResponse, isGenerating: false, artifactDecision: normalizedDecision }
                                     : msg
                             ),
                             isGenerating: false,
@@ -355,11 +358,57 @@ class AgentChatbox extends React.Component {
                         }));
                     }
                 }
+            ,
+            extracted
             );
         } catch (error) {
             // Error already handled in callbacks
         }
     };
+
+    extractConceptExplorationInput(userMessage, problemContext) {
+        const sources = [
+            userMessage || '',
+            problemContext?.problemTitle ? `Problem title: ${problemContext.problemTitle}` : '',
+            problemContext?.problemBody ? `Problem body: ${problemContext.problemBody}` : '',
+            problemContext?.currentStep?.title ? `Step title: ${problemContext.currentStep.title}` : '',
+            problemContext?.currentStep?.body ? `Step body: ${problemContext.currentStep.body}` : '',
+        ].filter(Boolean);
+
+        const combined = sources.join('\n\n');
+
+        const images = [];
+
+        // Markdown images: ![alt](url)
+        const mdImageRegex = /!\[[^\]]*\]\(([^)]+)\)/g;
+        let match;
+        while ((match = mdImageRegex.exec(combined)) !== null) {
+            const url = (match[1] || '').trim();
+            if (url) images.push(url);
+        }
+
+        // Raw URLs (best-effort)
+        const urlRegex = /\bhttps?:\/\/[^\s)]+\b/g;
+        const urlMatches = combined.match(urlRegex) || [];
+        for (const url of urlMatches) images.push(url);
+
+        // De-duplicate
+        const uniqueImages = Array.from(new Set(images));
+
+        return {
+            label: 'Concept Exploration',
+            text: combined,
+            images: uniqueImages,
+        };
+    }
+
+    normalizeArtifactDecision(decision) {
+        if (!decision || typeof decision !== 'object') return null;
+        if (typeof decision.enable_interactive_artifact !== 'boolean') return null;
+        if (!decision.enable_interactive_artifact) return null;
+        if (!decision.artifact_plan || typeof decision.artifact_plan !== 'object') return null;
+        return decision;
+    }
 
     /**
      * Extract problem context for the AI agent.
@@ -586,6 +635,7 @@ class AgentChatbox extends React.Component {
                                     {message.content ? (
                                         <div style={{ fontSize: 15, lineHeight: 1.6, fontWeight: 500, color: '#1f2933' }}>
                                             <MessageRenderer content={message.content} />
+                                            <ArtifactRenderer decision={message.artifactDecision} />
                                         </div>
                                     ) : (
                                         <Typography variant="body2" style={{ fontSize: 15, lineHeight: 1.6, fontWeight: 500, color: '#1f2933' }}>

@@ -46,6 +46,7 @@ export const handler = awslambda.streamifyResponse(
                 userMessage,
                 problemContext,
                 studentState,
+                extracted = {},
                 conversationHistory = []
             } = requestBody;
 
@@ -81,7 +82,10 @@ export const handler = awslambda.streamifyResponse(
             console.log('USER MESSAGE:', agentPrompt[1].content);
             console.log('================================================================================');
 
-            const response = await generateAgentResponse(openai, agentPrompt, httpResponseStream);
+            const response = await generateAgentResponse(openai, agentPrompt, httpResponseStream, {
+                problemContext,
+                extracted,
+            });
 
             if (response) {
                 await updateConversationHistory(sessionId, userMessage, response);
