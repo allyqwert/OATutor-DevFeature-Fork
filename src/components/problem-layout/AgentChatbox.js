@@ -1,4 +1,5 @@
 import React from 'react';
+import { CONTENT_SOURCE } from '@common/global-config';
 import { agentHelper } from './AgentHelper';
 import MessageRenderer from './MessageRenderer';
 import ArtifactRenderer from './InteractiveArtifacts/ArtifactRenderer';
@@ -309,7 +310,9 @@ class AgentChatbox extends React.Component {
         // Get context from props
         const problemContext = this.getProblemContext();
         const studentState = this.getStudentState();
-        const extracted = this.extractConceptExplorationInput(userMessage, problemContext);
+        const { text, figureUrls } = this.extractConceptExplorationInput(userMessage, problemContext);
+        const images = await this.fetchFiguresAsBase64(figureUrls);
+        const extracted = { text, images };
 
         const assistantMessageId = `assistant-${messageId}`;
 
@@ -377,29 +380,52 @@ class AgentChatbox extends React.Component {
 
         const combined = sources.join('\n\n');
 
-        const images = [];
-
-        // Markdown images: ![alt](url)
-        const mdImageRegex = /!\[[^\]]*\]\(([^)]+)\)/g;
-        let match;
-        while ((match = mdImageRegex.exec(combined)) !== null) {
-            const url = (match[1] || '').trim();
-            if (url) images.push(url);
+        // Collect figure filenames from ##filename tokens (same convention as RenderMedia).
+        // Only figures from the current problem are collected; the path is identical to what
+        // RenderMedia builds, so if the student can see the image the URL is resolvable.
+        const figureUrls = [];
+        const problemID = problemContext?.problemID;
+        if (problemID) {
+            const figTokenRegex = /##([^\s#\n]+)/g;
+            let m;
+            while ((m = figTokenRegex.exec(combined)) !== null) {
+                const filename = (m[1] || '').trim();
+                if (filename) {
+                    const base = (process.env.PUBLIC_URL || '').replace(/\/$/, '');
+                    figureUrls.push(
+                        `${window.location.origin}${base}/static/images/figures/${CONTENT_SOURCE}/${problemID}/${filename}`
+                    );
+                }
+            }
         }
-
-        // Raw URLs (best-effort)
-        const urlRegex = /\bhttps?:\/\/[^\s)]+\b/g;
-        const urlMatches = combined.match(urlRegex) || [];
-        for (const url of urlMatches) images.push(url);
-
-        // De-duplicate
-        const uniqueImages = Array.from(new Set(images));
 
         return {
             label: 'Concept Exploration',
             text: combined,
-            images: uniqueImages,
+            figureUrls: Array.from(new Set(figureUrls)),
         };
+    }
+
+    async fetchFiguresAsBase64(figureUrls) {
+        const results = [];
+        for (const url of figureUrls) {
+            try {
+                const res = await fetch(url);
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const blob = await res.blob();
+                const dataUrl = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => resolve(reader.result);
+                    reader.onerror = () => reject(new Error('read failed'));
+                    reader.readAsDataURL(blob);
+                });
+                results.push(dataUrl);
+            } catch (e) {
+                // eslint-disable-next-line no-console
+                console.warn('[AI Tutor] Could not load figure for vision:', url, e);
+            }
+        }
+        return results;
     }
 
     normalizeArtifactDecision(decision) {
