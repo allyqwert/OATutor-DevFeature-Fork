@@ -1,6 +1,5 @@
-import React, { useMemo, useState } from 'react';
-import { Box, Slider, Typography } from '@material-ui/core';
-import ArtifactFrame from './ArtifactFrame';
+import React, { useEffect, useMemo, useState } from 'react';
+import { Slider } from '@material-ui/core';
 import ArtifactMarkdown from './ArtifactMarkdown';
 
 function debugLog(...args) {
@@ -34,6 +33,7 @@ function evaluateExpression(expr, vars = {}) {
     }
     const body = expr.slice(1);
     try {
+        // eslint-disable-next-line no-new-func
         const fn = new Function('vars', 'Math', `with (vars) { return (${body}); }`);
         const result = fn(vars, Math);
         return Number.isFinite(Number(result)) ? Number(result) : 0;
@@ -46,6 +46,29 @@ function interpolateTemplate(text, vars = {}) {
     if (typeof text !== 'string') return '';
     let output = text;
 
+    const helpers = {
+        // For plugging into patterns like (x - h): renders as "- 2", "+ 5", "+ 0"
+        fmtMinus: (v) => {
+            const n = Number(v);
+            if (!Number.isFinite(n)) return '';
+            if (n < 0) return `+ ${Math.abs(n)}`;
+            if (n === 0) return '+ 0';
+            return `- ${n}`;
+        },
+        // For plugging into patterns like (x + h): renders as "+ 2", "- 5", "+ 0"
+        fmtPlus: (v) => {
+            const n = Number(v);
+            if (!Number.isFinite(n)) return '';
+            if (n < 0) return `- ${Math.abs(n)}`;
+            if (n === 0) return '+ 0';
+            return `+ ${n}`;
+        },
+        fmtAbs: (v) => {
+            const n = Number(v);
+            return Number.isFinite(n) ? Math.abs(n) : 0;
+        },
+    };
+
     // Run multiple passes so templates introduced by earlier replacements can also resolve.
     // Keep expression matcher strict (no braces inside) to avoid swallowing LaTeX braces.
     const templateRegex = /\{\{\s*([^{}]+?)\s*\}\}/g;
@@ -53,8 +76,14 @@ function interpolateTemplate(text, vars = {}) {
         let changed = false;
         output = output.replace(templateRegex, (_full, expression) => {
             try {
-                const fn = new Function('vars', 'Math', `with (vars) { return (${expression}); }`);
-                const value = fn(vars, Math);
+                // eslint-disable-next-line no-new-func
+                const fn = new Function(
+                    'vars',
+                    'Math',
+                    'helpers',
+                    `with (vars) { with (helpers) { return (${expression}); } }`
+                );
+                const value = fn(vars, Math, helpers);
                 changed = true;
                 if (value === undefined || value === null) return '';
                 const asNum = Number(value);
@@ -68,14 +97,114 @@ function interpolateTemplate(text, vars = {}) {
         if (!changed) break;
     }
 
-    // Final cleanup for any malformed remnants that can break KaTeX.
-    output = output
-        .replace(/\{\{/g, '')
-        .replace(/\}\}/g, '')
-        .replace(/\s{2,}/g, ' ')
-        .trim();
+    // Final cleanup: collapse whitespace only. Do NOT strip `{{` or `}}` —
+    // legitimate LaTeX like `F_{\text{normal}}` ends in `}}` and we would
+    // destroy its outer braces. Unresolved templates are already replaced
+    // with '' inside the loop's catch branch, so nothing else to clean.
+    output = output.replace(/\s{2,}/g, ' ').trim();
 
     return output;
+}
+
+function getStepPrecision(step) {
+    if (!Number.isFinite(step) || step <= 0 || step >= 1) return 0;
+    const str = String(step);
+    const dot = str.indexOf('.');
+    return dot === -1 ? 0 : str.length - dot - 1;
+}
+
+function formatValue(value, step) {
+    const precision = getStepPrecision(Number(step));
+    return Number(value).toFixed(precision);
+}
+
+// Round x to a "nice" number: power of 10 times 1, 2, or 5. Used to pick
+// slider step sizes that feel natural regardless of the variable's magnitude.
+function niceNumber(x) {
+    if (!Number.isFinite(x) || x <= 0) return 1;
+    const exp = Math.floor(Math.log10(x));
+    const frac = x / Math.pow(10, exp);
+    const mult = frac < 1.5 ? 1 : frac < 3.5 ? 2 : frac < 7.5 ? 5 : 10;
+    return mult * Math.pow(10, exp);
+}
+
+function snapToStep(value, step) {
+    if (!Number.isFinite(step) || step <= 0) return value;
+    return Math.round(value / step) * step;
+}
+
+// Small deterministic RNG so the same plan + variable always starts at the
+// same offset (no jitter on re-render), but different variables / different
+// plans get different starting points.
+function hashStringToSeed(s) {
+    let h = 2166136261;
+    const str = String(s || '');
+    for (let i = 0; i < str.length; i++) {
+        h ^= str.charCodeAt(i);
+        h = Math.imul(h, 16777619);
+    }
+    return h >>> 0;
+}
+
+function seededRng(seed) {
+    let s = (seed >>> 0) || 1;
+    return () => {
+        s = (s + 0x6D2B79F5) >>> 0;
+        let t = s;
+        t = Math.imul(t ^ (t >>> 15), t | 1);
+        t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+}
+
+// Derive a sensible slider range and step from the LLM-supplied config.
+// The LLM is unreliable at picking min/max/step (absurdly wide ranges,
+// jumpy non-uniform steps like 0.3). We keep only its `defaultValue` as the
+// "true answer" anchor and build a ~50-tick symmetric range with a
+// power-of-10 step. The slider then STARTS at a deterministic-but-nudged
+// position (not at the answer, not at the middle) so students have to
+// slide to explore — the whole point of an interactive visual.
+function autoSliderConfig(cfg, seedKey) {
+    const rawDefault = Number(cfg?.defaultValue);
+    const rawMin = Number(cfg?.min);
+    const rawMax = Number(cfg?.max);
+    const anchor = Number.isFinite(rawDefault)
+        ? rawDefault
+        : Number.isFinite(rawMin) && Number.isFinite(rawMax)
+            ? (rawMin + rawMax) / 2
+            : 0;
+    const magnitudeCandidates = [
+        Math.abs(anchor),
+        Math.abs(rawMax),
+        Math.abs(rawMin),
+    ].filter((v) => Number.isFinite(v) && v > 0);
+    const magnitude = magnitudeCandidates.length > 0 ? Math.max(...magnitudeCandidates) : 1;
+    const step = niceNumber(magnitude / 50);
+    const halfSpan = step * 25;
+    const min = snapToStep(anchor - halfSpan, step);
+    const max = snapToStep(anchor + halfSpan, step);
+
+    // Pick a starting position offset from the answer by 25–60% of halfSpan,
+    // in a seeded direction. Never starts AT the answer, never at the extremes.
+    const rng = seededRng(hashStringToSeed(seedKey));
+    const direction = rng() < 0.5 ? -1 : 1;
+    const fraction = 0.25 + rng() * 0.35; // 25%–60%
+    const start = anchor + direction * fraction * halfSpan;
+    const innerMin = min + step;
+    const innerMax = max - step;
+    const defaultValue = clamp(snapToStep(start, step), innerMin, innerMax);
+    return { min, max, step, defaultValue };
+}
+
+function normalizeLatexSigns(content) {
+    if (typeof content !== 'string') return '';
+    // Keep this intentionally conservative: only normalize obvious sign artifacts
+    // that look bad in plug-and-play output (e.g. "x - -5" -> "x + 5").
+    return content
+        .replace(/\+\s*-\s*/g, '- ')
+        .replace(/-\s*-\s*/g, '+ ')
+        .replace(/\(\s*-\s*/g, '(-') // avoid "( -5" spacing
+        .replace(/\s{2,}/g, ' ');
 }
 
 function toColor(value, fallback) {
@@ -195,7 +324,128 @@ function getAxisDomain(varsConfig, axis, fallbackDomain) {
     return { min: -maxAbs, max: maxAbs, valid: true };
 }
 
-function inferCircleDomainFromConfig(varsConfig) {
+// Walk the element tree and record which variable ids appear on x-like vs
+// y-like coordinate fields. We use this to right-size the axis domains so
+// the drawing always fills the canvas proportional to the sliders in use.
+function inferAxisVarNames(elements) {
+    const xKeys = ['x', 'x1', 'x2', 'x3', 'cx'];
+    const yKeys = ['y', 'y1', 'y2', 'y3', 'cy'];
+    const xVars = new Set();
+    const yVars = new Set();
+
+    const extractVar = (value) => {
+        if (typeof value !== 'string') return null;
+        const trimmed = value.trim();
+        const body = trimmed.startsWith('=') ? trimmed.slice(1).trim() : trimmed;
+        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(body)) return body;
+        return null;
+    };
+
+    const walkElement = (element) => {
+        if (!element || typeof element !== 'object') return;
+        xKeys.forEach((k) => {
+            const v = extractVar(element[k]);
+            if (v) xVars.add(v);
+        });
+        yKeys.forEach((k) => {
+            const v = extractVar(element[k]);
+            if (v) yVars.add(v);
+        });
+        if (Array.isArray(element.points)) {
+            element.points.forEach((p) => {
+                if (!p) return;
+                const vx = extractVar(p.x);
+                const vy = extractVar(p.y);
+                if (vx) xVars.add(vx);
+                if (vy) yVars.add(vy);
+            });
+        } else if (typeof element.points === 'string') {
+            // "x,y x,y ..." — all numeric, no variables to record.
+        }
+    };
+
+    (Array.isArray(elements) ? elements : []).forEach(walkElement);
+    return { xVars, yVars };
+}
+
+// Build an axis domain from the ranges of the specified variable ids, anchored
+// at 0 so that origin-based drawings (e.g. vectors from (0,0)) have room.
+function domainFromVarNames(varsConfig, names) {
+    if (!names || names.size === 0) return null;
+    const mins = [0];
+    const maxs = [0];
+    varsConfig.forEach((cfg) => {
+        if (!cfg?.id || !names.has(cfg.id)) return;
+        const min = Number(cfg.min);
+        const max = Number(cfg.max);
+        if (Number.isFinite(min) && Number.isFinite(max) && max > min) {
+            mins.push(min);
+            maxs.push(max);
+        }
+    });
+    if (mins.length === 1) return null; // only the 0 anchor, no real data
+    return { min: Math.min(...mins), max: Math.max(...maxs), valid: true };
+}
+
+// Convert a (potentially LaTeX-flavored) label into plain text suitable for
+// direct SVG <text> rendering. KaTeX can't run inside <text>, so instead of
+// showing `F_{\text{applied}}` literally, we reduce it to `F_applied`.
+function latexToPlainText(s) {
+    if (typeof s !== 'string') return '';
+    return s
+        .replace(/\\text\{([^{}]*)\}/g, '$1')
+        .replace(/\\mathrm\{([^{}]*)\}/g, '$1')
+        .replace(/\\vec\{([^{}]*)\}/g, '$1')
+        .replace(/\\sqrt\{([^{}]*)\}/g, 'sqrt($1)')
+        .replace(/\\frac\{([^{}]*)\}\{([^{}]*)\}/g, '($1)/($2)')
+        // Strip any remaining LaTeX commands like \alpha, \Delta, \cdot (keep the letters).
+        .replace(/\\([A-Za-z]+)/g, '$1')
+        // Strip leftover braces that were holding grouped content.
+        .replace(/[{}]/g, '')
+        .replace(/\s{2,}/g, ' ')
+        .trim();
+}
+
+// Split a plain-text label like `F_tot + x^2` into segments that SVG can
+// typeset with proper sub/superscripts (no KaTeX needed). Each segment is
+// `{ text, kind }` with kind ∈ 'base' | 'sub' | 'sup'. After a sub or sup,
+// following base text returns to the normal baseline automatically because
+// baseline-shift is a per-tspan presentation attribute.
+function parseLabelSegments(text) {
+    if (typeof text !== 'string' || !text) return [];
+    const segments = [];
+    let buf = '';
+    const flushBase = () => {
+        if (buf) {
+            segments.push({ text: buf, kind: 'base' });
+            buf = '';
+        }
+    };
+    let i = 0;
+    while (i < text.length) {
+        const ch = text[i];
+        if (ch === '_' || ch === '^') {
+            flushBase();
+            const kind = ch === '_' ? 'sub' : 'sup';
+            i += 1;
+            // Collect the subscript/superscript token: one identifier-ish run
+            // (letters, digits, Greek fallback). Stops at space or operator.
+            let tok = '';
+            while (i < text.length && /[A-Za-z0-9]/.test(text[i])) {
+                tok += text[i];
+                i += 1;
+            }
+            if (tok) segments.push({ text: tok, kind });
+        } else {
+            buf += ch;
+            i += 1;
+        }
+    }
+    flushBase();
+    return segments;
+}
+
+function inferCircleDomainFromConfig(varsConfig, vars) {
     const byKey = {};
     varsConfig.forEach((cfg) => {
         if (cfg?.id) byKey[String(cfg.id).toLowerCase()] = cfg;
@@ -206,14 +456,26 @@ function inferCircleDomainFromConfig(varsConfig) {
     const radiusCfg = byKey.radius || byKey.r;
     if (!radiusCfg) return null;
 
-    const cx = Number(centerXCfg?.defaultValue ?? 0);
-    const cy = Number(centerYCfg?.defaultValue ?? 0);
-    const r = Number(radiusCfg?.defaultValue);
-    if (!Number.isFinite(r) || r <= 0) return null;
+    const resolveVal = (cfg) => {
+        if (!cfg?.id) return Number.NaN;
+        const id = cfg.id;
+        const fromState = vars && Object.prototype.hasOwnProperty.call(vars, id)
+            ? Number(vars[id])
+            : Number.NaN;
+        if (Number.isFinite(fromState)) return fromState;
+        const fromDefault = Number(cfg.defaultValue);
+        if (Number.isFinite(fromDefault)) return fromDefault;
+        return Number.NaN;
+    };
 
-    const xCenter = Number.isFinite(cx) ? cx : 0;
-    const yCenter = Number.isFinite(cy) ? cy : 0;
-    const span = Math.max(4, r + 2);
+    const cxVal = resolveVal(centerXCfg);
+    const cyVal = resolveVal(centerYCfg);
+    const rVal = resolveVal(radiusCfg);
+    if (!Number.isFinite(rVal) || rVal <= 0) return null;
+
+    const xCenter = Number.isFinite(cxVal) ? cxVal : 0;
+    const yCenter = Number.isFinite(cyVal) ? cyVal : 0;
+    const span = Math.max(4, rVal + 2);
 
     return {
         xDomain: { min: xCenter - span, max: xCenter + span, valid: true },
@@ -227,6 +489,19 @@ function isLikelyCenterLabel(text) {
     return t.includes('center') || t.includes('centroid');
 }
 
+function isLikelyRadiusLabel(text) {
+    if (typeof text !== 'string') return false;
+    const t = text.toLowerCase();
+    return t.includes('radius') || t === 'r' || t.includes('r =');
+}
+
+function formatVarValue(varId, vars, context) {
+    const raw = Number(vars?.[varId]);
+    if (!Number.isFinite(raw)) return '';
+    const step = Number(context?.varConfigById?.[varId]?.step ?? 1);
+    return formatValue(raw, step);
+}
+
 function getPrimaryCircleMeta(vars, context) {
     const keys = Object.keys(vars).reduce((acc, key) => {
         acc[key.toLowerCase()] = key;
@@ -237,8 +512,6 @@ function getPrimaryCircleMeta(vars, context) {
     const rKey = keys.radius || keys.r;
     if (!rKey) return null;
 
-    const cxRaw = cxKey ? Number(vars[cxKey]) : 0;
-    const cyRaw = cyKey ? Number(vars[cyKey]) : 0;
     const rRaw = Number(vars[rKey]);
     if (!Number.isFinite(rRaw) || rRaw <= 0) return null;
 
@@ -319,10 +592,12 @@ function scaleFromGlobalDomain(rawValue, axis, context) {
     if (!domain?.valid) return rawValue;
     const min = domain.min;
     const max = domain.max;
-    if (!(Number.isFinite(rawValue) && rawValue >= min && rawValue <= max && max > min)) {
+    if (!(Number.isFinite(rawValue) && Number.isFinite(min) && Number.isFinite(max) && max > min)) {
         return rawValue;
     }
-    const t = (rawValue - min) / (max - min);
+    // Always clamp into the visible domain so slider extremes can't push visuals off-canvas.
+    const clampedRaw = clamp(rawValue, min, max);
+    const t = (clampedRaw - min) / (max - min);
     const clampedT = clamp(t, 0, 1);
     const { width, height, padding } = context;
 
@@ -435,11 +710,15 @@ function renderElement(element, vars, context) {
     const type = element?.type;
     if (!type) return null;
 
-    if (type === 'line') {
-        const x1 = resolveCoord(element.x, 'x', vars, context);
-        const y1 = resolveCoord(element.y, 'y', vars, context);
+    if (type === 'line' || type === 'arrow') {
+        // Support both {x,y,x2,y2} and the more common {x1,y1,x2,y2}.
+        const x1 = resolveCoord(element.x ?? element.x1, 'x', vars, context);
+        const y1 = resolveCoord(element.y ?? element.y1, 'y', vars, context);
         const x2 = resolveCoord(element.x2, 'x', vars, context);
         const y2 = resolveCoord(element.y2, 'y', vars, context);
+        const stroke = toColor(element.stroke, '#252525');
+        const strokeWidth = evaluateExpression(element.strokeWidth ?? 2, vars);
+        const opacity = evaluateExpression(element.opacity ?? 1, vars);
         return (
             <line
                 key={element.id}
@@ -447,9 +726,72 @@ function renderElement(element, vars, context) {
                 y1={y1}
                 x2={x2}
                 y2={y2}
-                stroke={toColor(element.stroke, '#252525')}
-                strokeWidth={evaluateExpression(element.strokeWidth ?? 2, vars)}
-                opacity={evaluateExpression(element.opacity ?? 1, vars)}
+                stroke={stroke}
+                strokeWidth={strokeWidth}
+                opacity={opacity}
+                markerEnd={type === 'arrow' ? 'url(#artifact-arrowhead)' : undefined}
+            />
+        );
+    }
+
+    if (type === 'polyline' || type === 'polygon' || type === 'triangle') {
+        // Accept points as either:
+        // - element.points: [{x,y}, ...]
+        // - element.points: "x,y x,y ..."
+        // - triangle aliases: {x1,y1,x2,y2,x3,y3}
+        let points = [];
+        if (Array.isArray(element.points)) {
+            points = element.points;
+        } else if (typeof element.points === 'string') {
+            points = element.points
+                .split(/\s+/)
+                .map((pair) => pair.split(','))
+                .filter((xy) => xy.length === 2)
+                .map(([x, y]) => ({ x, y }));
+        } else if (type === 'triangle') {
+            points = [
+                { x: element.x1, y: element.y1 },
+                { x: element.x2, y: element.y2 },
+                { x: element.x3, y: element.y3 },
+            ].filter((p) => p.x !== undefined && p.y !== undefined);
+        }
+
+        if (points.length < 2) return null;
+
+        const mapped = points
+            .map((p) => {
+                const x = resolveCoord(p.x, 'x', vars, context);
+                const y = resolveCoord(p.y, 'y', vars, context);
+                return `${x},${y}`;
+            })
+            .join(' ');
+
+        const stroke = toColor(element.stroke, '#252525');
+        const strokeWidth = evaluateExpression(element.strokeWidth ?? 2, vars);
+        const opacity = evaluateExpression(element.opacity ?? 1, vars);
+        const fill = type === 'polygon' ? toColor(element.fill, 'transparent') : 'transparent';
+
+        if (type === 'polygon') {
+            return (
+                <polygon
+                    key={element.id}
+                    points={mapped}
+                    stroke={stroke}
+                    strokeWidth={strokeWidth}
+                    fill={fill}
+                    opacity={opacity}
+                />
+            );
+        }
+
+        return (
+            <polyline
+                key={element.id}
+                points={mapped}
+                stroke={stroke}
+                strokeWidth={strokeWidth}
+                fill="transparent"
+                opacity={opacity}
             />
         );
     }
@@ -497,7 +839,8 @@ function renderElement(element, vars, context) {
     if (type === 'text') {
         let x = resolveCoord(element.x, 'x', vars, context);
         let y = resolveCoord(element.y, 'y', vars, context);
-        const text = interpolateTemplate(element.text || '', vars);
+        // SVG <text> can't render LaTeX, so strip it down to readable plain text.
+        let text = latexToPlainText(interpolateTemplate(element.text || '', vars));
 
         // Heuristic: if this is a center label and we have a circle, place label outside the circle.
         if (isLikelyCenterLabel(text)) {
@@ -505,8 +848,34 @@ function renderElement(element, vars, context) {
             if (circle) {
                 x = circle.cx + circle.r + 10;
                 y = circle.cy - 2;
+
+                // Prefer showing the live numeric center when possible.
+                const keys = Object.keys(vars).reduce((acc, key) => {
+                    acc[key.toLowerCase()] = key;
+                    return acc;
+                }, {});
+                const hKey = keys.h || keys.centerx || keys.cx;
+                const kKey = keys.k || keys.centery || keys.cy;
+                const hVal = hKey ? formatVarValue(hKey, vars, context) : '';
+                const kVal = kKey ? formatVarValue(kKey, vars, context) : '';
+                if (hVal !== '' && kVal !== '') {
+                    text = `Center (${hVal}, ${kVal})`;
+                }
             }
         }
+
+        if (isLikelyRadiusLabel(text)) {
+            const keys = Object.keys(vars).reduce((acc, key) => {
+                acc[key.toLowerCase()] = key;
+                return acc;
+            }, {});
+            const rKey = keys.r || keys.radius;
+            const rVal = rKey ? formatVarValue(rKey, vars, context) : '';
+            if (rVal !== '') {
+                text = `Radius ${rVal}`;
+            }
+        }
+        const segments = parseLabelSegments(text);
         return (
             <text
                 key={element.id}
@@ -516,7 +885,21 @@ function renderElement(element, vars, context) {
                 fontSize={evaluateExpression(element.fontSize ?? 12, vars)}
                 opacity={evaluateExpression(element.opacity ?? 1, vars)}
             >
-                {text}
+                {segments.length === 0
+                    ? text
+                    : segments.map((seg, idx) => (
+                          seg.kind === 'base'
+                              ? <tspan key={idx}>{seg.text}</tspan>
+                              : (
+                                    <tspan
+                                        key={idx}
+                                        baselineShift={seg.kind === 'sub' ? 'sub' : 'super'}
+                                        fontSize="0.75em"
+                                    >
+                                        {seg.text}
+                                    </tspan>
+                                )
+                      ))}
             </text>
         );
     }
@@ -531,36 +914,70 @@ export default function ArtifactRenderer({ decision }) {
         ? decision.artifact_plan
         : null;
 
-    const varsConfig = Array.isArray(plan?.variables) ? plan.variables : [];
-    const [variables, setVariables] = useState(() => {
+    const varsConfig = useMemo(() => {
+        const raw = Array.isArray(plan?.variables) ? plan.variables : [];
+        const planKey = plan?.title || 'artifact';
+        // Normalize min/max/step up front so every downstream consumer
+        // (init, sliders, domain inference) sees nice, uniform numbers.
+        // Seed the starting-offset per (plan, variable id) so it's stable
+        // across re-renders but varies between variables and problems.
+        return raw.map((v) => ({
+            ...v,
+            ...autoSliderConfig(v, `${planKey}:${v?.id || ''}`),
+        }));
+    }, [plan]);
+    const initialVariables = useMemo(() => {
         const initial = {};
         varsConfig.forEach((v) => {
             if (!v?.id) return;
-            const min = Math.round(Number(v.min ?? 0));
-            const max = Math.round(Number(v.max ?? 10));
+            const min = Number(v.min ?? 0);
+            const max = Number(v.max ?? 10);
             const fallback = Number.isFinite(min) ? min : 0;
-            const value = Math.round(Number(v.defaultValue ?? fallback));
-            initial[v.id] = Math.round(clamp(Number.isFinite(value) ? value : fallback, min, max));
+            const value = Number(v.defaultValue ?? fallback);
+            initial[v.id] = clamp(
+                Number.isFinite(value) ? value : fallback,
+                Number.isFinite(min) ? min : 0,
+                Number.isFinite(max) ? max : 10
+            );
         });
         return initial;
-    });
+    }, [varsConfig]);
+
+    const [variables, setVariables] = useState(() => initialVariables);
+
+    // When a new artifact plan arrives, re-init variables so the canvas and sliders match.
+    // This prevents the “starts at -5 but drawing at 0 until you drag” jump.
+    useEffect(() => {
+        setVariables(initialVariables);
+    }, [initialVariables]);
 
     const canvas = plan?.canvas && typeof plan.canvas === 'object' ? plan.canvas : {};
     const width = Number(canvas.width ?? 380) || 380;
     const height = Number(canvas.height ?? 220) || 220;
 
-    const elements = Array.isArray(plan?.elements) ? plan.elements : [];
+    const elements = useMemo(
+        () => (Array.isArray(plan?.elements) ? plan.elements : []),
+        [plan]
+    );
     const formulas = Array.isArray(plan?.formulas) ? plan.formulas : [];
     const varConfigById = useMemo(() => getVarConfigById(varsConfig), [varsConfig]);
     const globalDomain = useMemo(() => getGlobalDomain(varsConfig), [varsConfig]);
-    const fittedCircleDomain = useMemo(() => inferCircleDomainFromConfig(varsConfig), [varsConfig]);
+    const fittedCircleDomain = useMemo(
+        () => inferCircleDomainFromConfig(varsConfig, variables),
+        [varsConfig, variables]
+    );
+    const axisVarNames = useMemo(() => inferAxisVarNames(elements), [elements]);
     const xDomain = useMemo(
-        () => fittedCircleDomain?.xDomain || getAxisDomain(varsConfig, 'x', globalDomain),
-        [fittedCircleDomain, varsConfig, globalDomain]
+        () => fittedCircleDomain?.xDomain
+            || domainFromVarNames(varsConfig, axisVarNames.xVars)
+            || getAxisDomain(varsConfig, 'x', globalDomain),
+        [fittedCircleDomain, varsConfig, axisVarNames, globalDomain]
     );
     const yDomain = useMemo(
-        () => fittedCircleDomain?.yDomain || getAxisDomain(varsConfig, 'y', globalDomain),
-        [fittedCircleDomain, varsConfig, globalDomain]
+        () => fittedCircleDomain?.yDomain
+            || domainFromVarNames(varsConfig, axisVarNames.yVars)
+            || getAxisDomain(varsConfig, 'y', globalDomain),
+        [fittedCircleDomain, varsConfig, axisVarNames, globalDomain]
     );
     const renderContext = useMemo(() => ({
         width,
@@ -703,66 +1120,166 @@ export default function ArtifactRenderer({ decision }) {
 
     if (!plan) return null;
 
+    const cardStyle = {
+        marginTop: 12,
+        borderRadius: 12,
+        overflow: 'hidden',
+        background: 'rgba(255,255,255,0.8)',
+        border: '1px solid rgba(0,0,0,0.06)',
+        backdropFilter: 'blur(6px)',
+    };
+
+    const sliderRowStyle = {
+        display: 'grid',
+        gridTemplateColumns: '32px 48px 1fr',
+        alignItems: 'center',
+        gap: 8,
+        padding: '2px 0',
+    };
+
     return (
-        <ArtifactFrame title="Concept Exploration">
-            <Box display="flex" flexDirection="column" gridGap={10}>
-                {plan.title ? (
-                    <Typography variant="body2" style={{ fontWeight: 600, color: '#1f2933' }}>
-                        {plan.title}
-                    </Typography>
-                ) : null}
+        <div style={cardStyle}>
+            {/* ── Canvas ── */}
+            <div style={{ display: 'flex', justifyContent: 'center', padding: '16px 16px 8px' }}>
+                <svg
+                    width={width}
+                    height={height}
+                    viewBox={`0 0 ${width} ${height}`}
+                    style={{ display: 'block', maxWidth: '100%', height: 'auto' }}
+                >
+                    <defs>
+                        {/*
+                          One shared arrowhead for all `arrow` elements. `fill="context-stroke"`
+                          (SVG 2, Chrome 114+/Firefox/Safari) inherits the colour from the line
+                          using the marker, so each arrow's head matches its stroke. On older
+                          browsers the fallback renders the arrowhead in the default color.
+                        */}
+                        <marker
+                            id="artifact-arrowhead"
+                            viewBox="0 0 10 10"
+                            refX="9"
+                            refY="5"
+                            markerWidth="6"
+                            markerHeight="6"
+                            orient="auto-start-reverse"
+                            markerUnits="strokeWidth"
+                        >
+                            <path d="M 0 0 L 10 5 L 0 10 z" fill="context-stroke" />
+                        </marker>
+                    </defs>
+                    {gridElements}
+                    {(elements.length > 0)
+                        ? renderedElements
+                        : (fallbackDistanceElements.length > 0 ? fallbackDistanceElements : fallbackCircleElements)}
+                </svg>
+            </div>
 
-                <Box display="flex" justifyContent="center">
-                    <svg width={width} height={height}>
-                        {gridElements}
-                        {(elements.length > 0)
-                            ? renderedElements
-                            : (fallbackDistanceElements.length > 0 ? fallbackDistanceElements : fallbackCircleElements)}
-                    </svg>
-                </Box>
+            {/* ── Sliders ── */}
+            {varsConfig.length > 0 && (
+                <div style={{ padding: '4px 16px 8px' }}>
+                    {varsConfig.map((v) => {
+                        const id = v.id;
+                        if (!id) return null;
+                        const min = Number(v.min ?? 0);
+                        const max = Number(v.max ?? 10);
+                        const step = Number(v.step ?? 1);
+                        const value = Number(variables[id] ?? min);
+                        return (
+                            <div key={id} style={sliderRowStyle}>
+                                <span
+                                    title={v.label || id}
+                                    style={{ color: '#334e68', fontStyle: 'italic', fontSize: 14, fontWeight: 500, textAlign: 'right' }}
+                                >
+                                    {id}
+                                </span>
+                                <span style={{ color: '#52606d', fontSize: 13, fontFamily: 'monospace', textAlign: 'right' }}>
+                                    {formatValue(value, step)}
+                                </span>
+                                <Slider
+                                    value={value}
+                                    min={min}
+                                    max={max}
+                                    step={step}
+                                    onChange={(_event, next) => {
+                                        const nextValue = Array.isArray(next) ? next[0] : next;
+                                        setVariables((prev) => ({ ...prev, [id]: clamp(Number(nextValue), min, max) }));
+                                    }}
+                                    style={{ color: '#667eea' }}
+                                />
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
 
-                {formulas.map((formula) => (
-                    <ArtifactMarkdown
-                        key={formula.id || formula.latex}
-                        content={interpolateTemplate(formula.latex || '', variables)}
-                    />
-                ))}
-
-                {varsConfig.length > 0 ? (
-                    <Box>
-                        <Typography variant="caption" style={{ color: '#52606d', fontWeight: 600 }}>
-                            Adjust variables
-                        </Typography>
-                        {varsConfig.map((v) => {
-                            const id = v.id;
-                            if (!id) return null;
-                            const min = Math.round(Number(v.min ?? 0));
-                            const max = Math.round(Number(v.max ?? 10));
-                            const step = 1;
-                            const value = Math.round(Number(variables[id] ?? min));
-                            return (
-                                <Box mt={1} key={id}>
-                                    <Typography variant="caption" style={{ color: '#52606d' }}>
-                                        {v.label || id}: {value}
-                                    </Typography>
-                                    <Slider
-                                        value={value}
-                                        min={min}
-                                        max={max}
-                                        step={step}
-                                        onChange={(_event, next) => {
-                                            const num = Math.round(Number(next));
-                                            setVariables((prev) => ({ ...prev, [id]: Math.round(clamp(num, min, max)) }));
-                                        }}
-                                        valueLabelDisplay="auto"
-                                    />
-                                </Box>
-                            );
-                        })}
-                    </Box>
-                ) : null}
-            </Box>
-        </ArtifactFrame>
+            {/* ── Formulas ── */}
+            {formulas.length > 0 && (
+                <div style={{ padding: '4px 16px 14px' }}>
+                    {formulas.map((formula) => (
+                        <ArtifactMarkdown
+                            key={formula.id || formula.latex}
+                            content={appendObviousResult(
+                                normalizeLatexSigns(interpolateTemplate(formula.latex || '', variables)),
+                                formula,
+                                variables,
+                            )}
+                            style={{ color: '#52606d', fontSize: 14 }}
+                        />
+                    ))}
+                </div>
+            )}
+        </div>
     );
+}
+
+function safeEvalExpression(exprString, vars) {
+    if (typeof exprString !== 'string') return null;
+    const body = exprString.trim().replace(/^=/, '');
+    if (!body) return null;
+    try {
+        // eslint-disable-next-line no-new-func
+        const fn = new Function(
+            'vars', 'Math',
+            'sqrt', 'abs', 'sin', 'cos', 'tan', 'log', 'exp', 'pow', 'min', 'max', 'PI',
+            `with (vars) { return (${body}); }`
+        );
+        const result = Number(fn(
+            vars || {}, Math,
+            Math.sqrt, Math.abs, Math.sin, Math.cos, Math.tan,
+            Math.log, Math.exp, Math.pow, Math.min, Math.max, Math.PI,
+        ));
+        return Number.isFinite(result) ? result : null;
+    } catch (_e) {
+        return null;
+    }
+}
+
+function appendObviousResult(latex, formula, vars) {
+    if (typeof latex !== 'string') return '';
+    if (latex.includes('\\approx') || latex.includes('\\simeq')) return latex;
+
+    // Primary path: model-provided evaluable expression.
+    if (formula && typeof formula.expr === 'string' && formula.expr.trim()) {
+        const val = safeEvalExpression(formula.expr, vars);
+        if (val !== null) {
+            const rounded = Math.round(val * 100) / 100;
+            return `${latex} \\approx ${rounded}`;
+        }
+    }
+
+    // Fallback: numeric sqrt of sum-of-squares pattern (legacy plans without expr).
+    if (latex.includes('=') && /\\sqrt\s*\{/.test(latex) && /\d/.test(latex)) {
+        const m = latex.match(/\\sqrt\s*\{\s*([0-9.]+)\s*\^\s*2\s*\+\s*([0-9.]+)\s*\^\s*2\s*\}/);
+        if (m) {
+            const a = Number(m[1]);
+            const b = Number(m[2]);
+            if (Number.isFinite(a) && Number.isFinite(b)) {
+                const val = Math.sqrt(a * a + b * b);
+                const rounded = Math.round(val * 100) / 100;
+                return `${latex} \\approx ${rounded}`;
+            }
+        }
+    }
+    return latex;
 }
 

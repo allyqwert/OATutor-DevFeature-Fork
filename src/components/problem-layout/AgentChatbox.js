@@ -661,13 +661,13 @@ class AgentChatbox extends React.Component {
                                     {message.content ? (
                                         <div style={{ fontSize: 15, lineHeight: 1.6, fontWeight: 500, color: '#1f2933' }}>
                                             <MessageRenderer content={message.content} />
-                                            <ArtifactRenderer decision={message.artifactDecision} />
                                         </div>
                                     ) : (
                                         <Typography variant="body2" style={{ fontSize: 15, lineHeight: 1.6, fontWeight: 500, color: '#1f2933' }}>
                                             {message.isGenerating ? 'Thinking...' : ''}
                                         </Typography>
                                     )}
+                                    <ArtifactRenderer decision={message.artifactDecision} />
                                     {message.isGenerating && (
                                         <CircularProgress size={16} style={{ marginLeft: 8 }} />
                                     )}

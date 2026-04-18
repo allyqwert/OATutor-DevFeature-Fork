@@ -8,6 +8,94 @@ function artifactLog(...args) {
     console.log("[artifact-debug]", ...args);
 }
 
+const GENERATE_VISUAL_TOOL = {
+    type: "function",
+    function: {
+        name: "generate_visual",
+        description: "Generate an interactive visual (sliders + shapes + formulas) to help the student understand a math concept. Only call this when a visual genuinely aids understanding.",
+        parameters: {
+            type: "object",
+            properties: {
+                concept: {
+                    type: "string",
+                    description: "Short snake_case label for the concept being visualized, e.g. 'pythagorean_theorem', 'slope_intercept', 'unit_circle'. Used for analytics.",
+                },
+                title: { type: "string", description: "Display title for the visual." },
+                canvas: {
+                    type: "object",
+                    properties: {
+                        width: { type: "number" },
+                        height: { type: "number" },
+                    },
+                    required: ["width", "height"],
+                },
+                variables: {
+                    type: "array",
+                    items: {
+                        type: "object",
+                        properties: {
+                            id: { type: "string" },
+                            label: { type: "string" },
+                            min: { type: "number" },
+                            max: { type: "number" },
+                            step: { type: "number" },
+                            defaultValue: { type: "number" },
+                        },
+                        required: ["id", "label", "min", "max", "step", "defaultValue"],
+                    },
+                },
+                elements: {
+                    type: "array",
+                    items: {
+                        type: "object",
+                        properties: {
+                            id: { type: "string" },
+                            type: {
+                                type: "string",
+                                enum: [
+                                    "line",
+                                    "arrow",
+                                    "circle",
+                                    "rect",
+                                    "text",
+                                    "polyline",
+                                    "polygon",
+                                    "triangle",
+                                ],
+                                description: "Primitive element. Use `arrow` for any directed quantity (displacement, gradient, flow, velocity, field, force, slope direction). Use `polyline`/`polygon` for multi-point shapes, `triangle` with x1/y1/x2/y2/x3/y3.",
+                            },
+                            x: {}, y: {},
+                            x1: {}, y1: {}, x2: {}, y2: {}, x3: {}, y3: {},
+                            width: {}, height: {}, r: {},
+                            points: {},
+                            text: { type: "string" },
+                            stroke: { type: "string" },
+                            fill: { type: "string" },
+                            strokeWidth: { type: "number" },
+                            fontSize: { type: "number" },
+                            opacity: { type: "number" },
+                        },
+                        required: ["id", "type"],
+                    },
+                },
+                formulas: {
+                    type: "array",
+                    items: {
+                        type: "object",
+                        properties: {
+                            id: { type: "string" },
+                            latex: { type: "string", description: "One symbolic LaTeX line (e.g., 'F_{tot} = \\\\sqrt{F_1^2 + F_2^2}'). Do NOT include the plugged-in numeric line; the renderer appends the numeric result automatically from `expr`." },
+                            expr: { type: "string", description: "Optional evaluable expression using variable IDs (e.g., 'sqrt(F1*F1 + F2*F2)'). Supported: Math.*, bare sqrt/abs/sin/cos/tan/log/exp/pow/min/max/PI. When present, the renderer appends '≈ <computed value>' after the latex." },
+                        },
+                        required: ["id", "latex"],
+                    },
+                },
+            },
+            required: ["concept", "title", "canvas", "variables", "elements"],
+        },
+    },
+};
+
 export function buildAgentPrompt({ userMessage, problemContext, studentState, conversationHistory, extracted = {} }) {
     // Load prompt template
     const promptTemplate = readFileSync(join(__dirname, 'prompt.txt'), 'utf-8');
@@ -117,157 +205,12 @@ export function buildAgentPrompt({ userMessage, problemContext, studentState, co
     return messages;
 }
 
-async function generateArtifactDecision(openai, { userMessage, problemContext, extracted = {} }, config = {}) {
-    const {
-        model = "gpt-4o-mini",
-        temperature = 0,
-        max_tokens = 1900,
-    } = config;
-
-    const courseName = problemContext?.courseName || "";
-    const problemTitle = problemContext?.problemTitle || "";
-    const stepTitle = problemContext?.currentStep?.title || "";
-    const stepBody = problemContext?.currentStep?.body || "";
-
-    const extractedText = (extracted?.text || "").toString();
-    const extractedImages = Array.isArray(extracted?.images) ? extracted.images : [];
-
-    const system = [
-        "You decide whether an interactive learning artifact should be generated for a student question.",
-        "You are NOT restricted to predefined artifact types. Generate a generic artifact plan that can be rendered dynamically.",
-        "",
-        "Return ONLY valid JSON (no markdown fences) matching this schema:",
-        "{",
-        '  "enable_interactive_artifact": boolean,',
-        '  "reason": string,',
-        '  "artifact_plan": {',
-        '    "title": string,',
-        '    "canvas": { "width": number, "height": number },',
-        '    "variables": [',
-        '      { "id": string, "label": string, "min": number, "max": number, "step": number, "defaultValue": number }',
-        '    ],',
-        '    "elements": [',
-        '      {',
-        '        "id": string,',
-        '        "type": "line" | "circle" | "rect" | "text",',
-        '        "x": number | "=expression",',
-        '        "y": number | "=expression",',
-        '        "x2": number | "=expression",',
-        '        "y2": number | "=expression",',
-        '        "width": number | "=expression",',
-        '        "height": number | "=expression",',
-        '        "r": number | "=expression",',
-        '        "text": string,',
-        '        "stroke": string,',
-        '        "fill": string,',
-        '        "strokeWidth": number,',
-        '        "fontSize": number,',
-        '        "opacity": number',
-        '      }',
-        '    ],',
-        '    "formulas": [',
-        '      { "id": string, "latex": string }',
-        '    ]',
-        '  }',
-        "}",
-        "",
-        "Rules:",
-        "- PRIORITIZE THE LATEST USER MESSAGE over prior step context.",
-        "- If the latest user message explicitly asks to draw/visualize a concept, set enable_interactive_artifact=true and generate an artifact_plan for THAT concept.",
-        "- If the user asks for plain procedural algebra without visualization intent, set enable_interactive_artifact=false and artifact_plan=null.",
-        "- Use only variable IDs in expressions (e.g. '=centerX + r', '=Math.sqrt(a*a+b*b)').",
-        "- Keep plans concise: 2-8 variables, 3-25 elements, canvas around 320-520 by 180-320.",
-        "- Use sensible defaults; include at least one slider variable when artifact is enabled.",
-        "- Formula strings should use LaTeX and may include template expressions in double braces, e.g. '\\\\(c = \\\\sqrt{a^2+b^2} \\\\approx {{Math.sqrt(a*a+b*b).toFixed(2)}}\\\\)'.",
-        "- Text element strings may also include {{expression}} templates.",
-    ].join("\n");
-
-    const user = [
-        "Context:",
-        `- courseName: ${courseName}`,
-        `- problemTitle: ${problemTitle}`,
-        `- stepTitle: ${stepTitle}`,
-        `- stepBody: ${stepBody}`,
-        extractedText ? `- extractedText: ${extractedText}` : "",
-        extractedImages.length ? `- extractedImages: ${JSON.stringify(extractedImages)}` : "",
-        "",
-        `User question: ${userMessage}`,
-    ].filter(Boolean).join("\n");
-
-    try {
-        artifactLog("decision:start", {
-            userMessagePreview: (userMessage || "").slice(0, 120),
-            stepTitle,
-            hasExtractedImages: extractedImages.length > 0,
-        });
-
-        const resp = await openai.chat.completions.create({
-            model,
-            messages: [
-                { role: "system", content: system },
-                { role: "user", content: user },
-            ],
-            temperature,
-            max_tokens,
-            response_format: { type: "json_object" },
-        });
-
-        const raw = resp.choices?.[0]?.message?.content || "";
-        artifactLog("decision:raw", { length: raw.length, preview: raw.slice(0, 400) });
-
-        const parseResult = safeParseJson(raw);
-        const parsed = parseResult.parsed;
-        artifactLog("decision:parsed", parsed ? {
-            enable_interactive_artifact: parsed.enable_interactive_artifact,
-            hasPlan: !!parsed.artifact_plan,
-            planTitle: parsed.artifact_plan?.title,
-            varCount: Array.isArray(parsed.artifact_plan?.variables) ? parsed.artifact_plan.variables.length : 0,
-            elementCount: Array.isArray(parsed.artifact_plan?.elements) ? parsed.artifact_plan.elements.length : 0,
-        } : { error: parseResult.error });
-
-        const validated = modelValidateArtifactDecision(parsed);
-        if (validated) {
-            artifactLog("decision:validated:first-pass", {
-                enabled: validated.enable_interactive_artifact,
-                title: validated.artifact_plan?.title || null,
-                vars: validated.artifact_plan?.variables?.length || 0,
-                elements: validated.artifact_plan?.elements?.length || 0,
-            });
-            return validated;
-        }
-        artifactLog("decision:first-pass-invalid");
-
-        // One repair attempt for malformed output.
-        const repaired = await repairArtifactDecision(openai, raw, {
-            model,
-            max_tokens,
-        });
-        artifactLog("decision:repair-raw", repaired ? {
-            enable_interactive_artifact: repaired.enable_interactive_artifact,
-            hasPlan: !!repaired.artifact_plan,
-        } : null);
-
-        const repairedValidated = modelValidateArtifactDecision(repaired);
-        artifactLog("decision:validated:repair-pass", repairedValidated ? {
-            enabled: repairedValidated.enable_interactive_artifact,
-            title: repairedValidated.artifact_plan?.title || null,
-            vars: repairedValidated.artifact_plan?.variables?.length || 0,
-            elements: repairedValidated.artifact_plan?.elements?.length || 0,
-        } : null);
-        return repairedValidated;
-    } catch (_e) {
-        artifactLog("decision:error");
-        return null;
-    }
-}
-
 function safeParseJson(raw) {
     if (!raw || typeof raw !== "string") return { parsed: null, error: "empty-or-non-string" };
     const trimmed = raw.trim();
     try {
         return { parsed: JSON.parse(trimmed), error: null };
     } catch (e) {
-        // Best effort: extract first JSON object in case model wrapped content.
         const firstBrace = trimmed.indexOf("{");
         const lastBrace = trimmed.lastIndexOf("}");
         if (firstBrace === -1 || lastBrace === -1 || lastBrace <= firstBrace) {
@@ -279,51 +222,6 @@ function safeParseJson(raw) {
         } catch (e2) {
             return { parsed: null, error: `candidate-parse-failed:${e2?.message || "parse-error"}` };
         }
-    }
-}
-
-async function repairArtifactDecision(openai, invalidRaw, config = {}) {
-    const {
-        model = "gpt-4o-mini",
-        max_tokens = 400,
-    } = config;
-
-    const repairPrompt = [
-        "You must repair malformed JSON into valid JSON matching this schema exactly:",
-        "{",
-        '  "enable_interactive_artifact": boolean,',
-        '  "reason": string,',
-        '  "artifact_plan": null | {',
-        '    "title": string,',
-        '    "canvas": { "width": number, "height": number },',
-        '    "variables": [{ "id": string, "label": string, "min": number, "max": number, "step": number, "defaultValue": number }],',
-        '    "elements": [{ "id": string, "type": "line"|"circle"|"rect"|"text" }],',
-        '    "formulas": [{ "id": string, "latex": string }]',
-        '  }',
-        "}",
-        "Rules:",
-        "- Return ONLY JSON.",
-        "- If you cannot recover, return enable_interactive_artifact=false and artifact_plan=null.",
-        "",
-        "Malformed content:",
-        invalidRaw || "",
-    ].join("\n");
-
-    try {
-        const resp = await openai.chat.completions.create({
-            model,
-            messages: [{ role: "user", content: repairPrompt }],
-            temperature: 0,
-            max_tokens,
-            response_format: { type: "json_object" },
-        });
-        const parseResult = safeParseJson(resp.choices?.[0]?.message?.content || "");
-        if (!parseResult.parsed) {
-            artifactLog("decision:repair-parse-failed", parseResult.error);
-        }
-        return parseResult.parsed;
-    } catch (_e) {
-        return null;
     }
 }
 
@@ -405,7 +303,13 @@ function modelValidateArtifactPlan(plan) {
 
     const validatedElements = elements.map(modelValidateElement).filter(Boolean);
     if (validatedElements.length !== elements.length) {
-        artifactLog("validate:plan:elements-invalid");
+        const failedIdx = elements.map((el, i) => modelValidateElement(el) ? null : i).filter(i => i !== null);
+        artifactLog("validate:plan:elements-invalid", {
+            total: elements.length,
+            valid: validatedElements.length,
+            failedIndices: failedIdx,
+            failedElements: failedIdx.map(i => JSON.stringify(elements[i]).slice(0, 200)),
+        });
         return null;
     }
 
@@ -440,30 +344,56 @@ function modelValidateVariable(v) {
 function modelValidateElement(el) {
     if (!el || typeof el !== "object") return null;
     if (!isNonEmptyString(el.id)) return null;
-    const validTypes = new Set(["line", "circle", "rect", "text"]);
-    if (!validTypes.has(el.type)) return null;
+    const validTypes = new Set([
+        "line", "arrow", "circle", "rect", "text",
+        "polyline", "polygon", "triangle",
+    ]);
+    if (!validTypes.has(el.type)) {
+        artifactLog("validate:element:bad-type", { id: el.id, type: el.type });
+        return null;
+    }
 
     const out = { id: el.id, type: el.type };
+    const stringKeys = new Set(["text", "stroke", "fill"]);
     const allowedKeys = [
-        "x", "y", "x2", "y2", "width", "height", "r", "text",
+        "x", "y", "x1", "y1", "x2", "y2", "x3", "y3",
+        "width", "height", "r", "points", "text",
         "stroke", "fill", "strokeWidth", "fontSize", "opacity",
     ];
     for (const key of allowedKeys) {
         if (el[key] === undefined) continue;
-        if (["text", "stroke", "fill"].includes(key)) {
-            if (typeof el[key] !== "string") return null;
+        if (stringKeys.has(key)) {
+            if (typeof el[key] !== "string") {
+                artifactLog("validate:element:string-expected", { id: el.id, key, value: el[key] });
+                return null;
+            }
             out[key] = el[key];
             continue;
+        }
+        // `points` is allowed to be an array or a string (pass through untouched).
+        if (key === "points") {
+            if (Array.isArray(el.points) || typeof el.points === "string") {
+                out.points = el.points;
+                continue;
+            }
+            artifactLog("validate:element:bad-points", { id: el.id, type: typeof el.points });
+            return null;
         }
         if (typeof el[key] === "number") {
-            if (!Number.isFinite(el[key])) return null;
+            if (!Number.isFinite(el[key])) {
+                artifactLog("validate:element:non-finite", { id: el.id, key, value: el[key] });
+                return null;
+            }
             out[key] = el[key];
             continue;
         }
-        if (typeof el[key] === "string" && el[key].startsWith("=")) {
-            out[key] = el[key];
+        // LLMs sometimes omit the "=" prefix for expressions. Auto-prepend it
+        // so the renderer's evaluateExpression picks them up correctly.
+        if (typeof el[key] === "string") {
+            out[key] = el[key].startsWith("=") ? el[key] : `=${el[key]}`;
             continue;
         }
+        artifactLog("validate:element:unexpected-value", { id: el.id, key, type: typeof el[key] });
         return null;
     }
     return out;
@@ -472,7 +402,9 @@ function modelValidateElement(el) {
 function modelValidateFormula(f) {
     if (!f || typeof f !== "object") return null;
     if (!isNonEmptyString(f.id) || !isNonEmptyString(f.latex)) return null;
-    return { id: f.id, latex: f.latex };
+    const out = { id: f.id, latex: f.latex };
+    if (isNonEmptyString(f.expr)) out.expr = f.expr.trim();
+    return out;
 }
 
 function isNonEmptyString(value) {
@@ -488,7 +420,9 @@ export async function generateAgentResponse(openai, prompt, responseStream = nul
     const {
         model = "gpt-4o",
         temperature = 0.7,
-        max_tokens = 800  
+        max_tokens = 800,
+        problemId = null,
+        stepId = null,
     } = config;
 
     const stream = await openai.chat.completions.create({
@@ -496,42 +430,131 @@ export async function generateAgentResponse(openai, prompt, responseStream = nul
         messages: prompt,
         stream: true,
         temperature,
-        max_tokens
+        max_tokens,
+        tools: [GENERATE_VISUAL_TOOL],
+        tool_choice: "auto",
     });
 
     let fullResponse = "";
+
+    // Accumulate tool_call deltas keyed by index.
+    // Each entry: { id, name, arguments: "" }
+    const toolCallAccumulators = {};
     
     for await (const chunk of stream) {
-        const content = chunk.choices[0]?.delta?.content || "";
-        
+        const delta = chunk.choices[0]?.delta;
+        if (!delta) continue;
+
+        // --- text content ---
+        const content = delta.content || "";
         if (content) {
             fullResponse += content;
-            
             if (responseStream) {
                 responseStream.write(JSON.stringify({
                     type: "content",
-                    content: content,
+                    content,
                     timestamp: Date.now()
                 }) + '\n');
             } else {
                 process.stdout.write(content);
             }
         }
+
+        // --- tool_call deltas ---
+        if (Array.isArray(delta.tool_calls)) {
+            for (const tc of delta.tool_calls) {
+                const idx = tc.index;
+                if (!toolCallAccumulators[idx]) {
+                    toolCallAccumulators[idx] = {
+                        id: tc.id || "",
+                        name: tc.function?.name || "",
+                        arguments: "",
+                    };
+                }
+                if (tc.id) toolCallAccumulators[idx].id = tc.id;
+                if (tc.function?.name) toolCallAccumulators[idx].name = tc.function.name;
+                if (tc.function?.arguments) toolCallAccumulators[idx].arguments += tc.function.arguments;
+            }
+        }
+    }
+
+    // --- Extract artifact decision from tool call (if any) ---
+    let artifactDecision = null;
+
+    const visualCall = Object.values(toolCallAccumulators).find(tc => tc.name === "generate_visual");
+    if (visualCall) {
+        artifactLog("tool-call:raw", { argsLength: visualCall.arguments.length, preview: visualCall.arguments.slice(0, 400) });
+
+        const parseResult = safeParseJson(visualCall.arguments);
+        if (parseResult.parsed) {
+            const { concept, ...planFields } = parseResult.parsed;
+
+            const plan = modelValidateArtifactPlan(planFields);
+            if (plan) {
+                artifactDecision = {
+                    enable_interactive_artifact: true,
+                    reason: `tool_call:${concept || "unknown"}`,
+                    artifact_plan: plan,
+                };
+                artifactLog("tool-call:validated", {
+                    concept,
+                    title: plan.title,
+                    vars: plan.variables.length,
+                    elements: plan.elements.length,
+                });
+
+                // Phase 2 analytics: log every concept the LLM visualizes.
+                // Recording structural fingerprints (element-type counts, variable
+                // count, formula/expr counts) lets us cluster concepts by shape
+                // later without re-reading every plan.
+                const elementTypeCounts = plan.elements.reduce((acc, el) => {
+                    acc[el.type] = (acc[el.type] || 0) + 1;
+                    return acc;
+                }, {});
+                const formulaCount = Array.isArray(plan.formulas) ? plan.formulas.length : 0;
+                const formulaWithExprCount = Array.isArray(plan.formulas)
+                    ? plan.formulas.filter(f => typeof f.expr === "string" && f.expr.trim()).length
+                    : 0;
+                console.log("[visual-concept]", JSON.stringify({
+                    event: "visual_concept",
+                    concept: concept || "unknown",
+                    title: plan.title,
+                    problemId,
+                    stepId,
+                    variableCount: plan.variables.length,
+                    variableIds: plan.variables.map(v => v.id),
+                    elementCount: plan.elements.length,
+                    elementTypeCounts,
+                    formulaCount,
+                    formulaWithExprCount,
+                    timestamp: new Date().toISOString(),
+                }));
+            } else {
+                artifactLog("tool-call:validation-failed");
+            }
+        } else {
+            artifactLog("tool-call:parse-failed", parseResult.error);
+        }
+    }
+
+    // When the model only produced a tool call with no text, send a brief
+    // fallback so the chat bubble isn't empty for the student.
+    if (!fullResponse && artifactDecision) {
+        const fallback = "Here's an interactive visual to help you explore this concept. Try adjusting the sliders!";
+        fullResponse = fallback;
+        if (responseStream) {
+            responseStream.write(JSON.stringify({
+                type: "content",
+                content: fallback,
+                timestamp: Date.now()
+            }) + '\n');
+        }
     }
 
     if (responseStream) {
-        const userMessage = prompt?.[prompt.length - 1]?.content || "";
-        const problemContext = config?.problemContext || {};
-        const extracted = config?.extracted || {};
-        const artifactDecision = await generateArtifactDecision(
-            openai,
-            { userMessage, problemContext, extracted },
-            config?.artifactDecisionConfig || {}
-        );
-
         responseStream.write(JSON.stringify({
             type: "complete",
-            fullResponse: fullResponse,
+            fullResponse,
             artifactDecision,
             timestamp: Date.now()
         }) + '\n');

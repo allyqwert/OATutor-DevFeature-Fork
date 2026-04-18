@@ -90,8 +90,8 @@ export const handler = awslambda.streamifyResponse(
             console.log('================================================================================');
 
             const response = await generateAgentResponse(openai, agentPrompt, httpResponseStream, {
-                problemContext,
-                extracted,
+                problemId: problemContext?.problemId || problemContext?.problemTitle || null,
+                stepId: problemContext?.currentStep?.id || problemContext?.currentStep?.title || null,
             });
 
             if (response) {
