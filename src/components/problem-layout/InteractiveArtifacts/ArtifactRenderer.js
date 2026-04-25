@@ -33,9 +33,21 @@ function evaluateExpression(expr, vars = {}) {
     }
     const body = expr.slice(1);
     try {
+        // Inject bare Math helpers (sqrt, cos, sin, …) in addition to `Math.*`
+        // so LLM-friendly expressions like `cos(t)` or `sqrt(F1*F1+F2*F2)`
+        // evaluate consistently everywhere — coord fields, function-plot
+        // expressions, and formula exprs.
         // eslint-disable-next-line no-new-func
-        const fn = new Function('vars', 'Math', `with (vars) { return (${body}); }`);
-        const result = fn(vars, Math);
+        const fn = new Function(
+            'vars', 'Math',
+            'sqrt', 'abs', 'sin', 'cos', 'tan', 'log', 'exp', 'pow', 'min', 'max', 'PI', 'E',
+            `with (vars) { return (${body}); }`
+        );
+        const result = fn(
+            vars, Math,
+            Math.sqrt, Math.abs, Math.sin, Math.cos, Math.tan,
+            Math.log, Math.exp, Math.pow, Math.min, Math.max, Math.PI, Math.E,
+        );
         return Number.isFinite(Number(result)) ? Number(result) : 0;
     } catch (_e) {
         return 0;
@@ -133,6 +145,16 @@ function snapToStep(value, step) {
     return Math.round(value / step) * step;
 }
 
+// How many decimal places the number is written with. Capped so that
+// a pathological default like 2.71828182 doesn't give us millions of ticks.
+function getDecimalPlaces(n) {
+    if (!Number.isFinite(n)) return 0;
+    const s = String(n);
+    const dot = s.indexOf('.');
+    if (dot === -1) return 0;
+    return Math.min(s.length - dot - 1, 3);
+}
+
 // Small deterministic RNG so the same plan + variable always starts at the
 // same offset (no jitter on re-render), but different variables / different
 // plans get different starting points.
@@ -173,14 +195,22 @@ function autoSliderConfig(cfg, seedKey) {
         : Number.isFinite(rawMin) && Number.isFinite(rawMax)
             ? (rawMin + rawMax) / 2
             : 0;
-    const magnitudeCandidates = [
-        Math.abs(anchor),
-        Math.abs(rawMax),
-        Math.abs(rawMin),
-    ].filter((v) => Number.isFinite(v) && v > 0);
-    const magnitude = magnitudeCandidates.length > 0 ? Math.max(...magnitudeCandidates) : 1;
-    const step = niceNumber(magnitude / 50);
-    const halfSpan = step * 25;
+    // Magnitude is based ONLY on the default (the true answer). We deliberately
+    // ignore the LLM's min/max because it often picks absurdly wide ranges.
+    const magnitude = Math.abs(anchor) > 0
+        ? Math.abs(anchor)
+        : 1;
+    // Two competing constraints:
+    //   - niceStep: target ~50 ticks across the range so dragging feels natural.
+    //   - resolution: the decimal precision of the default itself, so the slider
+    //     can actually land on the answer (e.g. 26.4 needs step ≤ 0.1).
+    // We take the SMALLER of the two so the answer is always expressible.
+    const niceStep = niceNumber(magnitude / 50);
+    const resolution = Math.pow(10, -getDecimalPlaces(anchor));
+    const step = Math.min(niceStep, resolution);
+    // Span is still derived from the ~50-tick target so the exploration range
+    // doesn't collapse when we shrink the step for precision reasons.
+    const halfSpan = Math.max(niceStep * 25, resolution * 25);
     const min = snapToStep(anchor - halfSpan, step);
     const max = snapToStep(anchor + halfSpan, step);
 
@@ -272,119 +302,283 @@ function getVarConfigById(varsConfig) {
     return map;
 }
 
-function getGlobalDomain(varsConfig) {
-    const mins = [];
-    const maxs = [];
-    varsConfig.forEach((cfg) => {
-        const min = Number(cfg?.min);
-        const max = Number(cfg?.max);
-        if (Number.isFinite(min) && Number.isFinite(max) && max > min) {
-            mins.push(min);
-            maxs.push(max);
-        }
+// Tokens that should be treated as built-ins, not user sliders, when scanning
+// expressions for variable references.
+const EXPRESSION_RESERVED_TOKENS = new Set([
+    'Math', 'PI', 'E', 'sqrt', 'abs', 'sin', 'cos', 'tan', 'log', 'exp',
+    'pow', 'min', 'max', 'true', 'false', 'null', 'undefined',
+]);
+
+// Extract the user-defined slider tokens referenced inside an expression.
+function collectVarTokens(expr, byId) {
+    if (typeof expr !== 'string') return [];
+    const body = expr.trim().replace(/^=/, '').trim();
+    const matches = body.match(/[A-Za-z_][A-Za-z0-9_]*/g);
+    if (!matches) return [];
+    const set = new Set();
+    matches.forEach((t) => {
+        if (EXPRESSION_RESERVED_TOKENS.has(t)) return;
+        if (byId[t]) set.add(t);
     });
-    if (mins.length === 0) {
-        return { min: 0, max: 1, valid: false };
+    return Array.from(set);
+}
+
+// Compute the set of numeric values an expression can take across the slider
+// space. Works for literals, bare variables, and compound expressions alike —
+// evaluates at every (min, max) corner of the referenced sliders.
+function extentsOfExpr(expr, byId) {
+    if (expr === undefined || expr === null) return [];
+    if (typeof expr === 'number' && Number.isFinite(expr)) return [expr];
+    if (typeof expr !== 'string') return [];
+    const trimmed = expr.trim().replace(/^=/, '').trim();
+    if (!trimmed) return [];
+    const asNumber = Number(trimmed);
+    if (Number.isFinite(asNumber)) return [asNumber];
+
+    const tokens = collectVarTokens(expr, byId);
+    if (tokens.length === 0) return [];
+    if (tokens.length > 4) return []; // cap combinatorial explosion
+
+    const values = [];
+    const combos = 1 << tokens.length;
+    for (let mask = 0; mask < combos; mask += 1) {
+        const scope = {};
+        tokens.forEach((t, i) => {
+            const cfg = byId[t];
+            scope[t] = (mask & (1 << i)) ? Number(cfg.max) : Number(cfg.min);
+        });
+        const result = evaluateExpression(expr, scope);
+        if (Number.isFinite(result)) values.push(result);
     }
-    return {
-        min: Math.min(...mins),
-        max: Math.max(...maxs),
-        valid: true,
-    };
+    return values;
 }
 
-function getVarAxis(cfg) {
-    const idText = String(cfg?.id || '').toLowerCase();
-    const labelText = String(cfg?.label || '').toLowerCase();
-    const combined = `${idText} ${labelText}`;
-    if (combined.includes('radius') || idText === 'r' || labelText === 'r') return 'r';
-    if (idText.startsWith('x') || labelText.startsWith('x') || combined.includes('center x')) return 'x';
-    if (idText.startsWith('y') || labelText.startsWith('y') || combined.includes('center y')) return 'y';
-    return null;
-}
+// Modest default domain when a scene has no coord content. Intentionally NOT
+// derived from slider ranges, which can pollute an axis with unrelated
+// variables (e.g. a `mass` slider stretching the y-axis).
+const DEFAULT_DOMAIN = { min: -1, max: 1, valid: true };
 
-function getAxisDomain(varsConfig, axis, fallbackDomain) {
-    const mins = [];
-    const maxs = [];
-    varsConfig.forEach((cfg) => {
-        if (getVarAxis(cfg) !== axis) return;
-        const min = Number(cfg?.min);
-        const max = Number(cfg?.max);
-        if (Number.isFinite(min) && Number.isFinite(max) && max > min) {
-            mins.push(min);
-            maxs.push(max);
+// Clamp the number of corners we evaluate for a function element. 2^4=16
+// combinations × samples is acceptable; more would be combinatorial.
+const MAX_FN_SCAN_TOKENS = 4;
+
+// Sample a function element across its independent variable × every combo of
+// referenced slider extremes, pushing the resulting (x, y) pairs into the
+// running domain buckets. Keeps the axis domain wide enough that the full
+// curve (including its peaks/troughs) fits the canvas.
+function pushFunctionElementExtents(el, byId, xVals, yVals) {
+    const SCAN_SAMPLES = 12;
+    const evalAtCorners = (expr, extraScopeBuilder, onValue) => {
+        const tokens = collectVarTokens(expr, byId);
+        const limited = tokens.length > MAX_FN_SCAN_TOKENS ? [] : tokens;
+        const combos = 1 << limited.length;
+        for (let mask = 0; mask < Math.max(1, combos); mask += 1) {
+            const sliderScope = {};
+            limited.forEach((t, i) => {
+                const cfg = byId[t];
+                sliderScope[t] = (mask & (1 << i))
+                    ? Number(cfg?.max)
+                    : Number(cfg?.min);
+            });
+            for (let i = 0; i < SCAN_SAMPLES; i += 1) {
+                const extra = extraScopeBuilder(i / (SCAN_SAMPLES - 1));
+                const value = evaluateExpression(expr, { ...sliderScope, ...extra });
+                if (Number.isFinite(value)) onValue(value, extra);
+            }
         }
-    });
-    if (mins.length === 0) return fallbackDomain;
+    };
 
-    // Keep coordinate systems centered around origin for better visual consistency.
-    const domainMin = Math.min(...mins);
-    const domainMax = Math.max(...maxs);
-    const maxAbs = Math.max(Math.abs(domainMin), Math.abs(domainMax), 1);
-    return { min: -maxAbs, max: maxAbs, valid: true };
+    if (typeof el.fnX === 'string' && typeof el.fnY === 'string') {
+        const tMinCandidates = extentsOfExpr(el.tMin ?? 0, byId);
+        const tMaxCandidates = extentsOfExpr(el.tMax ?? 1, byId);
+        const tMinVal = tMinCandidates.length ? Math.min(...tMinCandidates) : 0;
+        const tMaxVal = tMaxCandidates.length ? Math.max(...tMaxCandidates) : 1;
+        const buildTScope = (u) => ({ t: tMinVal + (tMaxVal - tMinVal) * u });
+        evalAtCorners(el.fnX, buildTScope, (v) => xVals.push(v));
+        evalAtCorners(el.fnY, buildTScope, (v) => yVals.push(v));
+        return;
+    }
+    if (typeof el.fn === 'string') {
+        const xMinCandidates = extentsOfExpr(el.xMin ?? -5, byId);
+        const xMaxCandidates = extentsOfExpr(el.xMax ?? 5, byId);
+        const xMinVal = xMinCandidates.length ? Math.min(...xMinCandidates) : -5;
+        const xMaxVal = xMaxCandidates.length ? Math.max(...xMaxCandidates) : 5;
+        xVals.push(xMinVal, xMaxVal);
+        const buildXScope = (u) => ({ x: xMinVal + (xMaxVal - xMinVal) * u });
+        evalAtCorners(el.fn, buildXScope, (v, scope) => {
+            yVals.push(v);
+            if (Number.isFinite(scope.x)) xVals.push(scope.x);
+        });
+    }
 }
 
-// Walk the element tree and record which variable ids appear on x-like vs
-// y-like coordinate fields. We use this to right-size the axis domains so
-// the drawing always fills the canvas proportional to the sliders in use.
-function inferAxisVarNames(elements) {
+// Walk every element and every coordinate field, compute the true reachable
+// min/max of each axis across the entire slider space. Handles literals
+// (`cy: 0`), bare variables (`cx: "=d1"`), negations (`cx: "=-d1"`), and
+// compound expressions (`cx: "=d1 + d2"`) uniformly.
+function inferAxisDomainsFromElements(elements, varsConfig) {
+    const byId = {};
+    varsConfig.forEach((c) => { if (c?.id) byId[c.id] = c; });
     const xKeys = ['x', 'x1', 'x2', 'x3', 'cx'];
     const yKeys = ['y', 'y1', 'y2', 'y3', 'cy'];
-    const xVars = new Set();
-    const yVars = new Set();
+    const xVals = [0];
+    const yVals = [0];
 
-    const extractVar = (value) => {
-        if (typeof value !== 'string') return null;
-        const trimmed = value.trim();
-        const body = trimmed.startsWith('=') ? trimmed.slice(1).trim() : trimmed;
-        if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(body)) return body;
-        return null;
-    };
-
-    const walkElement = (element) => {
-        if (!element || typeof element !== 'object') return;
-        xKeys.forEach((k) => {
-            const v = extractVar(element[k]);
-            if (v) xVars.add(v);
-        });
-        yKeys.forEach((k) => {
-            const v = extractVar(element[k]);
-            if (v) yVars.add(v);
-        });
-        if (Array.isArray(element.points)) {
-            element.points.forEach((p) => {
+    (Array.isArray(elements) ? elements : []).forEach((el) => {
+        if (!el) return;
+        xKeys.forEach((k) => xVals.push(...extentsOfExpr(el[k], byId)));
+        yKeys.forEach((k) => yVals.push(...extentsOfExpr(el[k], byId)));
+        if (Array.isArray(el.points)) {
+            el.points.forEach((p) => {
                 if (!p) return;
-                const vx = extractVar(p.x);
-                const vy = extractVar(p.y);
-                if (vx) xVars.add(vx);
-                if (vy) yVars.add(vy);
+                xVals.push(...extentsOfExpr(p.x, byId));
+                yVals.push(...extentsOfExpr(p.y, byId));
             });
-        } else if (typeof element.points === 'string') {
-            // "x,y x,y ..." — all numeric, no variables to record.
         }
-    };
-
-    (Array.isArray(elements) ? elements : []).forEach(walkElement);
-    return { xVars, yVars };
-}
-
-// Build an axis domain from the ranges of the specified variable ids, anchored
-// at 0 so that origin-based drawings (e.g. vectors from (0,0)) have room.
-function domainFromVarNames(varsConfig, names) {
-    if (!names || names.size === 0) return null;
-    const mins = [0];
-    const maxs = [0];
-    varsConfig.forEach((cfg) => {
-        if (!cfg?.id || !names.has(cfg.id)) return;
-        const min = Number(cfg.min);
-        const max = Number(cfg.max);
-        if (Number.isFinite(min) && Number.isFinite(max) && max > min) {
-            mins.push(min);
-            maxs.push(max);
+        // For function elements, sample the curve across the sampling
+        // variable's range × every combination of referenced slider extremes,
+        // so the domain covers the full traced curve (not just its endpoints).
+        if (el.type === 'function') {
+            pushFunctionElementExtents(el, byId, xVals, yVals);
         }
     });
-    if (mins.length === 1) return null; // only the 0 anchor, no real data
-    return { min: Math.min(...mins), max: Math.max(...maxs), valid: true };
+
+    const toRange = (arr) => {
+        const filtered = arr.filter((v) => Number.isFinite(v));
+        if (filtered.length <= 1) return null; // only the origin anchor
+        const mn = Math.min(...filtered);
+        const mx = Math.max(...filtered);
+        if (!(mx > mn)) return null;
+        return { min: mn, max: mx, valid: true };
+    };
+
+    return { xDomain: toRange(xVals), yDomain: toRange(yVals) };
+}
+
+// Inflate an axis domain so the largest pixel-space element in the scene can
+// be drawn at any slider position (including the extremes) without clipping
+// the SVG edge — AND so the grid can safely fill the entire SVG (no wasted
+// whitespace padding around the plot).
+//
+// Derivation: the domain becomes [min - m, max + m]. When a slider hits its
+// max, its position maps to pixel `(span + m)/(span + 2m) * axisSize`. The
+// distance from that pixel to the SVG edge is `m/(span + 2m) * axisSize`,
+// which must be ≥ pixelExtent + safetyPx. Solving for m:
+//     m ≥ k * span / (1 - 2k),   where k = (pixelExtent + safetyPx) / axisSize.
+// We also enforce a minimum visual breathing room (`minFraction`) so simple
+// scenes still feel airy.
+function padDomainForPixelExtent(domain, axisSize, pixelExtent, safetyPx = 4, minFraction = 0.2) {
+    if (!domain || !Number.isFinite(domain.min) || !Number.isFinite(domain.max)) return domain;
+    const span = domain.max - domain.min;
+    if (!(span > 0)) return domain;
+
+    let margin = span * minFraction;
+    if (axisSize > 0 && pixelExtent > 0) {
+        const k = (pixelExtent + safetyPx) / axisSize;
+        if (k < 0.45) {
+            const needed = (k * span) / (1 - 2 * k);
+            if (needed > margin) margin = needed;
+        } else {
+            // Element is nearly as large as the axis. Can't avoid clipping
+            // cleanly; at least reserve half the visible domain as margin.
+            margin = Math.max(margin, span * 0.5);
+        }
+    }
+    return { min: domain.min - margin, max: domain.max + margin, valid: true };
+}
+
+// Single source of truth for per-element-type pixel-space caps. Used both to
+// compute the domain margin (so shapes don't clip the SVG edge) and to clamp
+// the actual rendered size (so the renderer never exceeds its declared max).
+// Keeping these aligned is what makes the bounds story self-consistent.
+//
+// Adding a new element type: add one entry. Both the margin math and the
+// rendering clamp will pick it up automatically.
+function circlePixelRadiusCap(width, height) {
+    return Math.max(16, Math.min(width, height) * 0.35);
+}
+
+function pixelExtentForElement(el, width, height) {
+    if (!el || typeof el.type !== 'string') return 0;
+    switch (el.type) {
+        case 'circle':
+            return circlePixelRadiusCap(width, height);
+        case 'arrow':
+            // Arrowhead marker (strokeWidth * markerWidth). 6*2 default.
+            return 12;
+        case 'text': {
+            // Approximate: font-size is the vertical extent; width depends on
+            // string length (rough 0.6em per char).
+            const fontSize = Number(el.fontSize) || 12;
+            const textLen = typeof el.text === 'string' ? el.text.length : 0;
+            return Math.max(fontSize, Math.min(textLen * fontSize * 0.6, 60));
+        }
+        default:
+            return 0;
+    }
+}
+
+// Compute the ACTUAL max rendered pixel radius for a circle, given how its `r`
+// expression would be interpreted by the renderer. Critical distinction: the
+// renderer has three code paths for circle radius —
+//
+//   1. Bare true-radius variable (`=r`, label="radius"): scaleFromVarToken
+//      maps world value to pixel range [8, cap].
+//   2. Bare non-radius variable (`=m1`): scaleFromVarToken maps to [3, 10]
+//      (marker range — prevents huge circles from mass/misc sliders).
+//   3. Literal number or compound expression: clamped to [2, cap] in pixels.
+//
+// Knowing the real max (not the theoretical cap) lets the domain margin stay
+// tight, so scenes with small shapes fill more of the canvas.
+function maxRenderedCirclePixelRadius(element, byId, cap) {
+    const rExpr = element?.r;
+    if (typeof rExpr === 'number' && Number.isFinite(rExpr)) {
+        return clamp(Math.abs(rExpr), 2, cap);
+    }
+    if (typeof rExpr !== 'string') return cap;
+    const trimmed = rExpr.trim();
+    const body = trimmed.startsWith('=') ? trimmed.slice(1).trim() : trimmed;
+    if (!body) return cap;
+    const literal = Number(body);
+    if (Number.isFinite(literal)) return clamp(Math.abs(literal), 2, cap);
+    if (/^[A-Za-z_][A-Za-z0-9_]*$/.test(body)) {
+        const cfg = byId[body];
+        if (cfg) {
+            const idLower = String(cfg.id).toLowerCase();
+            const labelLower = String(cfg.label || '').toLowerCase();
+            const isTrueRadius =
+                idLower === 'r'
+                || idLower.includes('radius')
+                || labelLower.includes('radius')
+                || labelLower === 'r';
+            return isTrueRadius ? cap : 10;
+        }
+    }
+    const extents = extentsOfExpr(rExpr, byId);
+    if (extents.length === 0) return cap;
+    const maxAbs = extents.reduce((m, v) => Math.max(m, Math.abs(v)), 0);
+    return clamp(maxAbs, 2, cap);
+}
+
+// Max pixel-space extent across every element in the scene. Feeds the domain
+// margin calculation so shapes never clip. Uses real rendered sizes (not
+// type-level theoretical maxes) so simple scenes don't waste canvas space.
+function computeMaxPixelExtent(elements, varsConfig, width, height) {
+    const byId = {};
+    (Array.isArray(varsConfig) ? varsConfig : []).forEach((c) => {
+        if (c?.id) byId[c.id] = c;
+    });
+    const circleCap = circlePixelRadiusCap(width, height);
+    let maxExtent = 0;
+    (Array.isArray(elements) ? elements : []).forEach((el) => {
+        if (!el) return;
+        if (el.type === 'circle') {
+            maxExtent = Math.max(maxExtent, maxRenderedCirclePixelRadius(el, byId, circleCap));
+        } else {
+            maxExtent = Math.max(maxExtent, pixelExtentForElement(el, width, height));
+        }
+    });
+    return maxExtent;
 }
 
 // Convert a (potentially LaTeX-flavored) label into plain text suitable for
@@ -443,82 +637,6 @@ function parseLabelSegments(text) {
     }
     flushBase();
     return segments;
-}
-
-function inferCircleDomainFromConfig(varsConfig, vars) {
-    const byKey = {};
-    varsConfig.forEach((cfg) => {
-        if (cfg?.id) byKey[String(cfg.id).toLowerCase()] = cfg;
-    });
-
-    const centerXCfg = byKey.centerx || byKey.h || byKey.cx;
-    const centerYCfg = byKey.centery || byKey.k || byKey.cy;
-    const radiusCfg = byKey.radius || byKey.r;
-    if (!radiusCfg) return null;
-
-    const resolveVal = (cfg) => {
-        if (!cfg?.id) return Number.NaN;
-        const id = cfg.id;
-        const fromState = vars && Object.prototype.hasOwnProperty.call(vars, id)
-            ? Number(vars[id])
-            : Number.NaN;
-        if (Number.isFinite(fromState)) return fromState;
-        const fromDefault = Number(cfg.defaultValue);
-        if (Number.isFinite(fromDefault)) return fromDefault;
-        return Number.NaN;
-    };
-
-    const cxVal = resolveVal(centerXCfg);
-    const cyVal = resolveVal(centerYCfg);
-    const rVal = resolveVal(radiusCfg);
-    if (!Number.isFinite(rVal) || rVal <= 0) return null;
-
-    const xCenter = Number.isFinite(cxVal) ? cxVal : 0;
-    const yCenter = Number.isFinite(cyVal) ? cyVal : 0;
-    const span = Math.max(4, rVal + 2);
-
-    return {
-        xDomain: { min: xCenter - span, max: xCenter + span, valid: true },
-        yDomain: { min: yCenter - span, max: yCenter + span, valid: true },
-    };
-}
-
-function isLikelyCenterLabel(text) {
-    if (typeof text !== 'string') return false;
-    const t = text.toLowerCase();
-    return t.includes('center') || t.includes('centroid');
-}
-
-function isLikelyRadiusLabel(text) {
-    if (typeof text !== 'string') return false;
-    const t = text.toLowerCase();
-    return t.includes('radius') || t === 'r' || t.includes('r =');
-}
-
-function formatVarValue(varId, vars, context) {
-    const raw = Number(vars?.[varId]);
-    if (!Number.isFinite(raw)) return '';
-    const step = Number(context?.varConfigById?.[varId]?.step ?? 1);
-    return formatValue(raw, step);
-}
-
-function getPrimaryCircleMeta(vars, context) {
-    const keys = Object.keys(vars).reduce((acc, key) => {
-        acc[key.toLowerCase()] = key;
-        return acc;
-    }, {});
-    const cxKey = keys.centerx || keys.h || keys.cx;
-    const cyKey = keys.centery || keys.k || keys.cy;
-    const rKey = keys.radius || keys.r;
-    if (!rKey) return null;
-
-    const rRaw = Number(vars[rKey]);
-    if (!Number.isFinite(rRaw) || rRaw <= 0) return null;
-
-    const cx = resolveCoord(cxKey || 0, 'x', vars, context);
-    const cy = resolveCoord(cyKey || 0, 'y', vars, context);
-    const r = resolveCoord(rKey, 'r', vars, context);
-    return { cx, cy, r };
 }
 
 function normalizeToken(token) {
@@ -588,7 +706,7 @@ function scaleFromGlobalDomain(rawValue, axis, context) {
         ? context.xDomain
         : axis === 'y'
             ? context.yDomain
-            : context.globalDomain;
+            : null;
     if (!domain?.valid) return rawValue;
     const min = domain.min;
     const max = domain.max;
@@ -706,6 +824,91 @@ function createGridElements(context) {
     return elements;
 }
 
+// Compute the pixel-space bounding box of an element at the current slider
+// values. Used by `attach` on text labels so they follow whatever they label
+// as sliders move. Returns null when the element type doesn't have a sensible
+// box (e.g. text labels themselves, or function curves which are handled
+// below with a simple midpoint approximation).
+function getElementPxBox(el, vars, context) {
+    if (!el || typeof el.type !== 'string') return null;
+    switch (el.type) {
+        case 'circle': {
+            const cx = resolveCoord(el.x, 'x', vars, context);
+            const cy = resolveCoord(el.y, 'y', vars, context);
+            const rawR = resolveCoord(el.r, 'r', vars, context);
+            const r = clamp(
+                Number.isFinite(rawR) ? rawR : 0,
+                2,
+                circlePixelRadiusCap(context.width, context.height),
+            );
+            return { minX: cx - r, maxX: cx + r, minY: cy - r, maxY: cy + r };
+        }
+        case 'line':
+        case 'arrow': {
+            const x1 = resolveCoord(el.x ?? el.x1, 'x', vars, context);
+            const y1 = resolveCoord(el.y ?? el.y1, 'y', vars, context);
+            const x2 = resolveCoord(el.x2, 'x', vars, context);
+            const y2 = resolveCoord(el.y2, 'y', vars, context);
+            return {
+                minX: Math.min(x1, x2),
+                maxX: Math.max(x1, x2),
+                minY: Math.min(y1, y2),
+                maxY: Math.max(y1, y2),
+            };
+        }
+        case 'rect': {
+            // Note: rect width/height are already in pixel space (evaluateExpression
+            // passes them straight to <rect>), so the bbox math mirrors the render.
+            const x = resolveCoord(el.x, 'x', vars, context);
+            const y = resolveCoord(el.y, 'y', vars, context);
+            const w = evaluateExpression(el.width, vars);
+            const h = evaluateExpression(el.height, vars);
+            return { minX: x, maxX: x + w, minY: y, maxY: y + h };
+        }
+        case 'polyline':
+        case 'polygon': {
+            const points = Array.isArray(el.points) ? el.points : [];
+            if (points.length === 0) return null;
+            const xs = points.map((p) => resolveCoord(p?.x, 'x', vars, context));
+            const ys = points.map((p) => resolveCoord(p?.y, 'y', vars, context));
+            return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+        }
+        case 'triangle': {
+            const pts = [
+                { x: el.x1, y: el.y1 },
+                { x: el.x2, y: el.y2 },
+                { x: el.x3, y: el.y3 },
+            ].filter((p) => p.x !== undefined && p.y !== undefined);
+            if (pts.length === 0) return null;
+            const xs = pts.map((p) => resolveCoord(p.x, 'x', vars, context));
+            const ys = pts.map((p) => resolveCoord(p.y, 'y', vars, context));
+            return { minX: Math.min(...xs), maxX: Math.max(...xs), minY: Math.min(...ys), maxY: Math.max(...ys) };
+        }
+        default:
+            return null;
+    }
+}
+
+// Pick a point on a bbox given a named side. SVG y grows downward, so "top"
+// is minY and "bottom" is maxY.
+function anchorFromBox(box, side) {
+    if (!box) return null;
+    const cx = (box.minX + box.maxX) / 2;
+    const cy = (box.minY + box.maxY) / 2;
+    switch (side) {
+        case 'left':        return { x: box.minX, y: cy };
+        case 'right':       return { x: box.maxX, y: cy };
+        case 'top':         return { x: cx,       y: box.minY };
+        case 'bottom':      return { x: cx,       y: box.maxY };
+        case 'topLeft':     return { x: box.minX, y: box.minY };
+        case 'topRight':    return { x: box.maxX, y: box.minY };
+        case 'bottomLeft':  return { x: box.minX, y: box.maxY };
+        case 'bottomRight': return { x: box.maxX, y: box.maxY };
+        case 'center':
+        default:            return { x: cx,       y: cy };
+    }
+}
+
 function renderElement(element, vars, context) {
     const type = element?.type;
     if (!type) return null;
@@ -730,6 +933,70 @@ function renderElement(element, vars, context) {
                 strokeWidth={strokeWidth}
                 opacity={opacity}
                 markerEnd={type === 'arrow' ? 'url(#artifact-arrowhead)' : undefined}
+            />
+        );
+    }
+
+    if (type === 'function') {
+        // Sample the function (either y = f(x) or parametric (x(t), y(t))) into
+        // world-space points, then render as a polyline. Supports tens to a
+        // couple hundred samples — curves are cheap; anything coarser looks
+        // jagged and anything finer hurts render cost without helping fidelity.
+        const rawSamples = evaluateExpression(element.samples ?? 60, vars);
+        const samples = clamp(Math.round(rawSamples) || 60, 2, 200);
+        const points = [];
+        const parametric = typeof element.fnX === 'string' && typeof element.fnY === 'string';
+        if (parametric) {
+            const tMin = evaluateExpression(element.tMin ?? 0, vars);
+            const tMax = evaluateExpression(element.tMax ?? 1, vars);
+            if (Number.isFinite(tMin) && Number.isFinite(tMax) && tMax !== tMin) {
+                for (let i = 0; i < samples; i += 1) {
+                    const t = tMin + (tMax - tMin) * (i / (samples - 1));
+                    const scope = { ...vars, t };
+                    const xVal = evaluateExpression(element.fnX, scope);
+                    const yVal = evaluateExpression(element.fnY, scope);
+                    if (Number.isFinite(xVal) && Number.isFinite(yVal)) {
+                        points.push({ x: xVal, y: yVal });
+                    }
+                }
+            }
+        } else if (typeof element.fn === 'string') {
+            const fallbackMin = context.xDomain?.min ?? -5;
+            const fallbackMax = context.xDomain?.max ?? 5;
+            const xMin = evaluateExpression(element.xMin ?? fallbackMin, vars);
+            const xMax = evaluateExpression(element.xMax ?? fallbackMax, vars);
+            if (Number.isFinite(xMin) && Number.isFinite(xMax) && xMax !== xMin) {
+                for (let i = 0; i < samples; i += 1) {
+                    const xVal = xMin + (xMax - xMin) * (i / (samples - 1));
+                    const scope = { ...vars, x: xVal };
+                    const yVal = evaluateExpression(element.fn, scope);
+                    if (Number.isFinite(yVal)) {
+                        points.push({ x: xVal, y: yVal });
+                    }
+                }
+            }
+        }
+        if (points.length < 2) return null;
+
+        const mapped = points
+            .map((p) => {
+                const px = resolveCoord(p.x, 'x', vars, context);
+                const py = resolveCoord(p.y, 'y', vars, context);
+                return `${px},${py}`;
+            })
+            .join(' ');
+
+        const stroke = toColor(element.stroke, '#0C74E8');
+        const strokeWidth = evaluateExpression(element.strokeWidth ?? 2, vars);
+        const opacity = evaluateExpression(element.opacity ?? 1, vars);
+        return (
+            <polyline
+                key={element.id}
+                points={mapped}
+                stroke={stroke}
+                strokeWidth={strokeWidth}
+                fill="transparent"
+                opacity={opacity}
             />
         );
     }
@@ -799,7 +1066,13 @@ function renderElement(element, vars, context) {
     if (type === 'circle') {
         const cx = resolveCoord(element.x, 'x', vars, context);
         const cy = resolveCoord(element.y, 'y', vars, context);
-        const r = resolveCoord(element.r, 'r', vars, context);
+        // Clamp to the same cap declared in pixelExtentForElement. Bare tokens
+        // like `=r` already go through scaleFromVarToken's pixel mapping, but
+        // complex expressions (e.g. `=r * 50`) bypass that and can produce
+        // huge radii. This clamp keeps the renderer honest either way.
+        const rawR = resolveCoord(element.r, 'r', vars, context);
+        const rCap = circlePixelRadiusCap(context.width, context.height);
+        const r = clamp(Number.isFinite(rawR) ? rawR : 0, 2, rCap);
         const areaStyle = getAreaStyle(element, 'circle', vars);
         return (
             <circle
@@ -837,44 +1110,26 @@ function renderElement(element, vars, context) {
     }
 
     if (type === 'text') {
-        let x = resolveCoord(element.x, 'x', vars, context);
-        let y = resolveCoord(element.y, 'y', vars, context);
+        // `attach` lets a label track another element as sliders move. Compute
+        // the target's bbox NOW (so the label follows live), pick a side of
+        // that box, then nudge by a pixel offset. If attach is missing or the
+        // target doesn't exist, fall back to the usual x/y coords.
+        let x;
+        let y;
+        const attach = element.attach;
+        if (attach && typeof attach === 'object' && typeof attach.to === 'string') {
+            const targetEl = context.elementById?.[attach.to];
+            const box = getElementPxBox(targetEl, vars, context);
+            const anchor = anchorFromBox(box, attach.side);
+            if (anchor) {
+                x = anchor.x + (Number(attach.offsetX) || 0);
+                y = anchor.y + (Number(attach.offsetY) || 0);
+            }
+        }
+        if (!Number.isFinite(x)) x = resolveCoord(element.x, 'x', vars, context);
+        if (!Number.isFinite(y)) y = resolveCoord(element.y, 'y', vars, context);
         // SVG <text> can't render LaTeX, so strip it down to readable plain text.
-        let text = latexToPlainText(interpolateTemplate(element.text || '', vars));
-
-        // Heuristic: if this is a center label and we have a circle, place label outside the circle.
-        if (isLikelyCenterLabel(text)) {
-            const circle = getPrimaryCircleMeta(vars, context);
-            if (circle) {
-                x = circle.cx + circle.r + 10;
-                y = circle.cy - 2;
-
-                // Prefer showing the live numeric center when possible.
-                const keys = Object.keys(vars).reduce((acc, key) => {
-                    acc[key.toLowerCase()] = key;
-                    return acc;
-                }, {});
-                const hKey = keys.h || keys.centerx || keys.cx;
-                const kKey = keys.k || keys.centery || keys.cy;
-                const hVal = hKey ? formatVarValue(hKey, vars, context) : '';
-                const kVal = kKey ? formatVarValue(kKey, vars, context) : '';
-                if (hVal !== '' && kVal !== '') {
-                    text = `Center (${hVal}, ${kVal})`;
-                }
-            }
-        }
-
-        if (isLikelyRadiusLabel(text)) {
-            const keys = Object.keys(vars).reduce((acc, key) => {
-                acc[key.toLowerCase()] = key;
-                return acc;
-            }, {});
-            const rKey = keys.r || keys.radius;
-            const rVal = rKey ? formatVarValue(rKey, vars, context) : '';
-            if (rVal !== '') {
-                text = `Radius ${rVal}`;
-            }
-        }
+        const text = latexToPlainText(interpolateTemplate(element.text || '', vars));
         const segments = parseLabelSegments(text);
         return (
             <text
@@ -961,129 +1216,63 @@ export default function ArtifactRenderer({ decision }) {
     );
     const formulas = Array.isArray(plan?.formulas) ? plan.formulas : [];
     const varConfigById = useMemo(() => getVarConfigById(varsConfig), [varsConfig]);
-    const globalDomain = useMemo(() => getGlobalDomain(varsConfig), [varsConfig]);
-    const fittedCircleDomain = useMemo(
-        () => inferCircleDomainFromConfig(varsConfig, variables),
-        [varsConfig, variables]
+    // True reachable bounds of every element's coordinates across the slider
+    // space. This is authoritative — it sees literals, negations, and complex
+    // expressions, not just bare variable tokens. When a scene has no coord
+    // content (rare), we fall back to a modest default domain rather than
+    // polluting an axis with unrelated slider ranges.
+    const sceneAxisDomains = useMemo(
+        () => inferAxisDomainsFromElements(elements, varsConfig),
+        [elements, varsConfig]
     );
-    const axisVarNames = useMemo(() => inferAxisVarNames(elements), [elements]);
+    // Scene-wide max pixel extent. Uses the ACTUAL rendered size per element
+    // (not the theoretical per-type cap) so scenes with small shapes get
+    // tight domain margins and fill more of the canvas.
+    const maxPixelExtent = useMemo(
+        () => computeMaxPixelExtent(elements, varsConfig, width, height),
+        [elements, varsConfig, width, height]
+    );
     const xDomain = useMemo(
-        () => fittedCircleDomain?.xDomain
-            || domainFromVarNames(varsConfig, axisVarNames.xVars)
-            || getAxisDomain(varsConfig, 'x', globalDomain),
-        [fittedCircleDomain, varsConfig, axisVarNames, globalDomain]
+        () => padDomainForPixelExtent(
+            sceneAxisDomains.xDomain || DEFAULT_DOMAIN,
+            width,
+            maxPixelExtent,
+        ),
+        [sceneAxisDomains, width, maxPixelExtent]
     );
     const yDomain = useMemo(
-        () => fittedCircleDomain?.yDomain
-            || domainFromVarNames(varsConfig, axisVarNames.yVars)
-            || getAxisDomain(varsConfig, 'y', globalDomain),
-        [fittedCircleDomain, varsConfig, axisVarNames, globalDomain]
+        () => padDomainForPixelExtent(
+            sceneAxisDomains.yDomain || DEFAULT_DOMAIN,
+            height,
+            maxPixelExtent,
+        ),
+        [sceneAxisDomains, height, maxPixelExtent]
     );
+    const elementById = useMemo(() => {
+        const map = {};
+        elements.forEach((el) => {
+            if (el?.id) map[el.id] = el;
+        });
+        return map;
+    }, [elements]);
     const renderContext = useMemo(() => ({
         width,
         height,
-        padding: 20,
+        // Grid and positions fill the entire SVG; breathing room is baked
+        // into the domain margin above, not reserved as whitespace here.
+        padding: 0,
         varConfigById,
-        globalDomain,
         xDomain,
         yDomain,
-    }), [width, height, varConfigById, globalDomain, xDomain, yDomain]);
+        // Used by text `attach` to look up the element being labeled.
+        elementById,
+    }), [width, height, varConfigById, xDomain, yDomain, elementById]);
     const gridElements = useMemo(() => createGridElements(renderContext), [renderContext]);
 
     const renderedElements = useMemo(
         () => elements.map((element) => renderElement(element, variables, renderContext)).filter(Boolean),
         [elements, variables, renderContext]
     );
-
-    const fallbackDistanceElements = useMemo(() => {
-        const lowerKeys = Object.keys(variables).reduce((acc, key) => {
-            acc[key.toLowerCase()] = key;
-            return acc;
-        }, {});
-
-        const x1Key = lowerKeys.x1;
-        const y1Key = lowerKeys.y1;
-        const x2Key = lowerKeys.x2;
-        const y2Key = lowerKeys.y2;
-        if (!x1Key || !y1Key || !x2Key || !y2Key) return [];
-
-        const x1 = Number(variables[x1Key]);
-        const y1 = Number(variables[y1Key]);
-        const x2 = Number(variables[x2Key]);
-        const y2 = Number(variables[y2Key]);
-        if (![x1, y1, x2, y2].every(Number.isFinite)) return [];
-
-        const minX = Math.min(x1, x2);
-        const maxX = Math.max(x1, x2);
-        const minY = Math.min(y1, y2);
-        const maxY = Math.max(y1, y2);
-        const rangeX = Math.max(1, maxX - minX);
-        const rangeY = Math.max(1, maxY - minY);
-
-        const padding = 24;
-        const plotW = Math.max(40, width - 2 * padding);
-        const plotH = Math.max(40, height - 2 * padding);
-
-        const sx = (x) => padding + ((x - minX) / rangeX) * plotW;
-        // Invert y so higher values appear higher on screen.
-        const sy = (y) => height - padding - ((y - minY) / rangeY) * plotH;
-
-        const px1 = sx(x1);
-        const py1 = sy(y1);
-        const px2 = sx(x2);
-        const py2 = sy(y2);
-        const distance = Math.hypot(x2 - x1, y2 - y1);
-
-        return [
-            <line key="fb-axis-x" x1={padding} y1={height - padding} x2={width - padding} y2={height - padding} stroke="rgba(31,41,51,0.25)" strokeWidth="1.5" />,
-            <line key="fb-axis-y" x1={padding} y1={padding} x2={padding} y2={height - padding} stroke="rgba(31,41,51,0.25)" strokeWidth="1.5" />,
-            <line key="fb-segment" x1={px1} y1={py1} x2={px2} y2={py2} stroke="#0C74E8" strokeWidth="3" />,
-            <circle key="fb-p1" cx={px1} cy={py1} r="4.5" fill="#1f2933" />,
-            <circle key="fb-p2" cx={px2} cy={py2} r="4.5" fill="#1f2933" />,
-            <text key="fb-t1" x={px1 + 8} y={py1 - 8} fontSize="12" fill="#334e68">{`P1(${x1}, ${y1})`}</text>,
-            <text key="fb-t2" x={px2 + 8} y={py2 - 8} fontSize="12" fill="#334e68">{`P2(${x2}, ${y2})`}</text>,
-            <text key="fb-dist" x={(px1 + px2) / 2 + 8} y={(py1 + py2) / 2 - 10} fontSize="12" fill="#0C74E8">{`d ≈ ${distance.toFixed(2)}`}</text>,
-        ];
-    }, [variables, width, height]);
-
-    const fallbackCircleElements = useMemo(() => {
-        const lowerKeys = Object.keys(variables).reduce((acc, key) => {
-            acc[key.toLowerCase()] = key;
-            return acc;
-        }, {});
-
-        const centerXKey = lowerKeys.centerx || lowerKeys.h || lowerKeys.cx;
-        const centerYKey = lowerKeys.centery || lowerKeys.k || lowerKeys.cy;
-        const radiusKey = lowerKeys.radius || lowerKeys.r;
-        if (!radiusKey) return [];
-
-        const radiusValue = Number(variables[radiusKey]);
-        if (!Number.isFinite(radiusValue) || radiusValue <= 0) return [];
-
-        const rawCenterX = centerXKey ? Number(variables[centerXKey]) : 0;
-        const rawCenterY = centerYKey ? Number(variables[centerYKey]) : 0;
-        const centerXVal = Number.isFinite(rawCenterX) ? rawCenterX : 0;
-        const centerYVal = Number.isFinite(rawCenterY) ? rawCenterY : 0;
-
-        const maxR = Math.max(1, Math.abs(radiusValue));
-        const pad = 28;
-        const plotW = Math.max(40, width - 2 * pad);
-        const plotH = Math.max(40, height - 2 * pad);
-        const radiusPx = Math.min(plotW, plotH) * 0.28;
-
-        const cx = pad + plotW * 0.5 + (centerXVal / (maxR * 2)) * (plotW * 0.35);
-        const cy = pad + plotH * 0.5 - (centerYVal / (maxR * 2)) * (plotH * 0.35);
-
-        return [
-            <line key="fc-axis-x" x1={pad} y1={pad + plotH * 0.5} x2={width - pad} y2={pad + plotH * 0.5} stroke="rgba(31,41,51,0.2)" strokeWidth="1.25" />,
-            <line key="fc-axis-y" x1={pad + plotW * 0.5} y1={pad} x2={pad + plotW * 0.5} y2={height - pad} stroke="rgba(31,41,51,0.2)" strokeWidth="1.25" />,
-            <circle key="fc-circle" cx={cx} cy={cy} r={radiusPx} stroke="#0C74E8" fill="rgba(12,116,232,0.10)" strokeWidth="3" />,
-            <circle key="fc-center" cx={cx} cy={cy} r="3.5" fill="#1f2933" />,
-            <line key="fc-radius" x1={cx} y1={cy} x2={cx + radiusPx} y2={cy} stroke="#252525" strokeWidth="2.5" />,
-            <text key="fc-center-label" x={cx + 8} y={cy - 8} fontSize="12" fill="#334e68">{`Center (${centerXVal}, ${centerYVal})`}</text>,
-            <text key="fc-radius-label" x={cx + radiusPx / 2} y={cy - 10} textAnchor="middle" fontSize="12" fill="#334e68">{`r = ${radiusValue}`}</text>,
-        ];
-    }, [variables, width, height]);
 
     React.useEffect(() => {
         debugLog('renderer:decision', {
@@ -1097,8 +1286,6 @@ export default function ArtifactRenderer({ decision }) {
             yDomain,
             elementsCount: elements.length,
             renderedElementsCount: renderedElements.length,
-            fallbackDistanceCount: fallbackDistanceElements.length,
-            fallbackCircleCount: fallbackCircleElements.length,
             gridElementsCount: gridElements.length,
             formulasCount: formulas.length
         });
@@ -1112,8 +1299,6 @@ export default function ArtifactRenderer({ decision }) {
         yDomain,
         elements.length,
         renderedElements.length,
-        fallbackDistanceElements.length,
-        fallbackCircleElements.length,
         gridElements.length,
         formulas.length
     ]);
@@ -1168,9 +1353,7 @@ export default function ArtifactRenderer({ decision }) {
                         </marker>
                     </defs>
                     {gridElements}
-                    {(elements.length > 0)
-                        ? renderedElements
-                        : (fallbackDistanceElements.length > 0 ? fallbackDistanceElements : fallbackCircleElements)}
+                    {renderedElements}
                 </svg>
             </div>
 

@@ -61,14 +61,36 @@ const GENERATE_VISUAL_TOOL = {
                                     "polyline",
                                     "polygon",
                                     "triangle",
+                                    "function",
                                 ],
-                                description: "Primitive element. Use `arrow` for any directed quantity (displacement, gradient, flow, velocity, field, force, slope direction). Use `polyline`/`polygon` for multi-point shapes, `triangle` with x1/y1/x2/y2/x3/y3.",
+                                description: "Primitive element. Use `arrow` for any directed quantity (displacement, gradient, flow, velocity, field, force, slope direction). Use `polyline`/`polygon` for multi-point shapes, `triangle` with x1/y1/x2/y2/x3/y3. Use `function` to plot y = f(x) via `fn` (e.g. 'fn: =x*x'), or a parametric curve via `fnX` and `fnY` (both expressions in `t`, e.g. 'fnX: =cos(t), fnY: =sin(t)').",
                             },
                             x: {}, y: {},
                             x1: {}, y1: {}, x2: {}, y2: {}, x3: {}, y3: {},
                             width: {}, height: {}, r: {},
                             points: {},
+                            fn: { type: "string", description: "For `function` elements: expression in the sampling variable `x` (e.g. '=x*x + 2*x')." },
+                            fnX: { type: "string", description: "For parametric `function` elements: x(t) expression (e.g. '=cos(t)')." },
+                            fnY: { type: "string", description: "For parametric `function` elements: y(t) expression (e.g. '=sin(t)')." },
+                            xMin: {}, xMax: {},
+                            tMin: {}, tMax: {},
+                            samples: { type: "number", description: "Optional sample count for `function` elements. Defaults to 60, clamped to [2, 200]." },
                             text: { type: "string" },
+                            attach: {
+                                type: "object",
+                                description: "For `text` elements: makes the label follow another element as sliders change. Use this instead of hard-coding x/y when the label describes a shape that moves or resizes.",
+                                properties: {
+                                    to: { type: "string", description: "The id of the element this label describes." },
+                                    side: {
+                                        type: "string",
+                                        enum: ["center", "left", "right", "top", "bottom", "topLeft", "topRight", "bottomLeft", "bottomRight"],
+                                        description: "Which side of the target's bounding box to anchor on. Defaults to 'center'. Use 'right' / 'top' / etc. to place the label just outside the shape.",
+                                    },
+                                    offsetX: { type: "number", description: "Pixel nudge from the anchor. Positive moves right." },
+                                    offsetY: { type: "number", description: "Pixel nudge from the anchor. Positive moves down (SVG convention)." },
+                                },
+                                required: ["to"],
+                            },
                             stroke: { type: "string" },
                             fill: { type: "string" },
                             strokeWidth: { type: "number" },
@@ -319,6 +341,24 @@ function modelValidateArtifactPlan(plan) {
         return null;
     }
 
+    // Dead-slider check: every declared variable must DRIVE GEOMETRY — i.e.
+    // appear in at least one element coordinate / size / function field, OR
+    // inside a formula expression. Usage inside an element `text` label or a
+    // formula's display `latex` alone does NOT count: in that case the
+    // student sees the label number change but nothing in the scene moves,
+    // which is exactly the "I dragged it and nothing happened" complaint
+    // this check exists to prevent.
+    const usedVarIds = collectUsedVarIds(validatedElements, validatedFormulas);
+    const deadVars = validatedVariables.filter((v) => !usedVarIds.has(v.id));
+    if (deadVars.length > 0) {
+        artifactLog("validate:plan:dead-sliders", {
+            deadIds: deadVars.map((v) => v.id),
+            declaredIds: validatedVariables.map((v) => v.id),
+            usedIds: Array.from(usedVarIds),
+        });
+        return null;
+    }
+
     return {
         title: plan.title.trim(),
         canvas: { width, height },
@@ -326,6 +366,43 @@ function modelValidateArtifactPlan(plan) {
         elements: validatedElements,
         formulas: validatedFormulas,
     };
+}
+
+// Walk every GEOMETRY-bearing field (element coords / sizes / function-plot
+// expressions) and every formula `expr`, returning the set of identifier
+// tokens found. Intentionally does NOT scan element `text` labels or formula
+// `latex` display strings — a slider that only feeds a label doesn't move
+// anything in the scene and counts as dead for this validator's purposes.
+function collectUsedVarIds(validatedElements, validatedFormulas) {
+    const used = new Set();
+    const tokenRegex = /[A-Za-z_][A-Za-z0-9_]*/g;
+    const scan = (value) => {
+        if (typeof value !== "string") return;
+        const matches = value.match(tokenRegex);
+        if (!matches) return;
+        matches.forEach((t) => used.add(t));
+    };
+    const geometryKeys = [
+        "x", "y", "x1", "y1", "x2", "y2", "x3", "y3",
+        "width", "height", "r",
+        "fn", "fnX", "fnY", "tMin", "tMax", "xMin", "xMax", "samples",
+    ];
+    (Array.isArray(validatedElements) ? validatedElements : []).forEach((el) => {
+        geometryKeys.forEach((k) => scan(el[k]));
+        if (Array.isArray(el.points)) {
+            el.points.forEach((p) => {
+                if (!p) return;
+                scan(p.x);
+                scan(p.y);
+            });
+        } else {
+            scan(el.points);
+        }
+    });
+    (Array.isArray(validatedFormulas) ? validatedFormulas : []).forEach((f) => {
+        scan(f.expr);
+    });
+    return used;
 }
 
 function modelValidateVariable(v) {
@@ -346,7 +423,7 @@ function modelValidateElement(el) {
     if (!isNonEmptyString(el.id)) return null;
     const validTypes = new Set([
         "line", "arrow", "circle", "rect", "text",
-        "polyline", "polygon", "triangle",
+        "polyline", "polygon", "triangle", "function",
     ]);
     if (!validTypes.has(el.type)) {
         artifactLog("validate:element:bad-type", { id: el.id, type: el.type });
@@ -357,11 +434,25 @@ function modelValidateElement(el) {
     const stringKeys = new Set(["text", "stroke", "fill"]);
     const allowedKeys = [
         "x", "y", "x1", "y1", "x2", "y2", "x3", "y3",
-        "width", "height", "r", "points", "text",
+        "width", "height", "r", "points", "text", "attach",
+        "fn", "fnX", "fnY", "xMin", "xMax", "tMin", "tMax", "samples",
         "stroke", "fill", "strokeWidth", "fontSize", "opacity",
     ];
     for (const key of allowedKeys) {
         if (el[key] === undefined) continue;
+        if (key === "attach") {
+            const a = el.attach;
+            if (!a || typeof a !== "object" || !isNonEmptyString(a.to)) {
+                artifactLog("validate:element:bad-attach", { id: el.id });
+                return null;
+            }
+            const outAttach = { to: a.to };
+            if (isNonEmptyString(a.side)) outAttach.side = a.side;
+            if (typeof a.offsetX === "number" && Number.isFinite(a.offsetX)) outAttach.offsetX = a.offsetX;
+            if (typeof a.offsetY === "number" && Number.isFinite(a.offsetY)) outAttach.offsetY = a.offsetY;
+            out.attach = outAttach;
+            continue;
+        }
         if (stringKeys.has(key)) {
             if (typeof el[key] !== "string") {
                 artifactLog("validate:element:string-expected", { id: el.id, key, value: el[key] });
@@ -395,6 +486,14 @@ function modelValidateElement(el) {
         }
         artifactLog("validate:element:unexpected-value", { id: el.id, key, type: typeof el[key] });
         return null;
+    }
+    if (out.type === "function") {
+        const hasSingleVar = isNonEmptyString(out.fn);
+        const hasParametric = isNonEmptyString(out.fnX) && isNonEmptyString(out.fnY);
+        if (!hasSingleVar && !hasParametric) {
+            artifactLog("validate:element:function-missing-expr", { id: out.id });
+            return null;
+        }
     }
     return out;
 }
