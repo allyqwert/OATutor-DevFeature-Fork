@@ -1,7 +1,7 @@
 {
   "files": {
     "main.css": "/OATutor-DevFeature-Fork/static/css/main.d245aa73.css",
-    "main.js": "/OATutor-DevFeature-Fork/static/js/main.82196d8f.js",
+    "main.js": "/OATutor-DevFeature-Fork/static/js/main.c266990c.js",
     "static/media/Symbola.svg": "/OATutor-DevFeature-Fork/static/media/Symbola.f647c9292a2da02d9ae8.svg",
     "static/media/Symbola.eot": "/OATutor-DevFeature-Fork/static/media/Symbola.d25fbd520f6558203fb4.eot",
     "static/media/Symbola.ttf": "/OATutor-DevFeature-Fork/static/media/Symbola.1ac5fa7f9b82ed4ce3f3.ttf",
@@ -76,10 +76,10 @@
     "static/media/book-open.svg": "/OATutor-DevFeature-Fork/static/media/book-open.bc09eaa841589d722f890728eba0ee22.svg",
     "static/media/chevron-left.svg": "/OATutor-DevFeature-Fork/static/media/chevron-left.aa92f302d926a3fd5718d600b722eb2a.svg",
     "main.d245aa73.css.map": "/OATutor-DevFeature-Fork/static/css/main.d245aa73.css.map",
-    "main.82196d8f.js.map": "/OATutor-DevFeature-Fork/static/js/main.82196d8f.js.map"
+    "main.c266990c.js.map": "/OATutor-DevFeature-Fork/static/js/main.c266990c.js.map"
   },
   "entrypoints": [
     "static/css/main.d245aa73.css",
-    "static/js/main.82196d8f.js"
+    "static/js/main.c266990c.js"
   ]
 }
