@@ -32,6 +32,7 @@ import { cleanArray } from "../../util/cleanObject";
 import {Accordion, AccordionSummary, Typography} from "@material-ui/core";
 import ExpandMoreIcon from '@material-ui/icons/ExpandMore';
 import AgentIntegration from './AgentIntegration';
+import StandaloneChatView from './StandaloneChatView';
 
 class Problem extends React.Component {
     static defaultProps = {
@@ -86,6 +87,7 @@ class Problem extends React.Component {
             isHintPortalOpen: false,
             attemptHistory: {}, // { "Problem Title": { "Question Text": ["attempt1", "attempt2"] } }
             hintUsageByStep: {}, // { [stepIndex]: { stepId, hints: [{ id, title, text, type, viewed }] } }
+            standaloneExited: false,
         };
 
         this.togglePopup = this.togglePopup.bind(this);
@@ -527,6 +529,27 @@ class Problem extends React.Component {
         const { isHintPortalOpen } = this.state;
         if (problem == null) {
             return <div></div>;
+        }
+
+        const chatDisplayMode = this.props.lesson?.chat_display_mode || 'Off';
+        if (chatDisplayMode === 'Full' && !this.state.standaloneExited) {
+            return (
+                <StandaloneChatView
+                    lesson={this.props.lesson}
+                    problem={problem}
+                    seed={seed}
+                    problemVars={this.props.problemVars}
+                    stepStates={this.state.stepStates}
+                    bktParams={this.bktParams}
+                    getActiveStepData={this.getActiveStepData}
+                    attemptHistory={this.state.attemptHistory}
+                    user={this.props.user}
+                    lessonMasteryMap={this.props.lessonMasteryMap}
+                    hintUsageByStep={this.state.hintUsageByStep}
+                    condition="standalone_gpt_only"
+                    onExit={() => this.setState({ standaloneExited: true })}
+                />
+            );
         }
 
         const drawerOpen = this.props.drawerOpen;
@@ -1096,7 +1119,7 @@ class Problem extends React.Component {
                 </footer>
 
                 {/* AI Agent Chatbot */}
-                {this.props.lesson?.enable_ai_chat && (
+                {chatDisplayMode === 'Window' && (
                     <AgentIntegration
                         problem={problem}
                         lesson={this.props.lesson}
