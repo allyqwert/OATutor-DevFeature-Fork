@@ -74,6 +74,76 @@ class LessonSelection extends React.Component {
         history.push(`/courses/${courseIndex}`);
     };
 
+    handleLessonSelect = (lesson) => {
+        this.props.history.push(`/lessons/${lesson.id}`);
+    };
+
+    handleMetaLessonSelect = (metaLesson) => {
+        console.log("[Meta Picker TEST] clicked meta lesson:", metaLesson.id);
+        this.props.history.push(`/lessons/${metaLesson.id}`);
+    };
+
+    renderLessonCard(lesson, i) {
+        const { classes, translate } = this.props;
+        return (
+            <Grid item xs={12} sm={6} md={4} key={lesson.id || i}>
+                <center>
+                    <Paper className={classes.paper} style={{ position: "relative" }}>
+                        <IconButton
+                            size="small"
+                            style={{ position: "absolute", top: 8, right: 8 }}
+                            aria-label={`View all problems for lesson ${lesson.id}`}
+                            onClick={() => this.props.history.push(`/lessons/${lesson.id}/problems`)}
+                        >
+                            <MenuBookIcon fontSize="small" />
+                        </IconButton>
+
+                        <h2 style={{ marginTop: 5, marginBottom: 10 }}>
+                            {(lesson.name || "").replace(/##/g, "")}
+                        </h2>
+                        <h3 style={{ marginTop: 5 }}>{lesson.topics}</h3>
+
+                        <Button
+                            variant="contained"
+                            color="primary"
+                            className={classes.button}
+                            onClick={() => this.handleLessonSelect(lesson)}
+                        >
+                            {translate("lessonSelection.onlyselect")}
+                        </Button>
+                    </Paper>
+                </center>
+            </Grid>
+        );
+    }
+
+    renderMetaLessonCard(metaLesson) {
+        const { classes, translate } = this.props;
+        const displayName = metaLesson.name || metaLesson.id;
+
+        return (
+            <Grid item xs={12} sm={6} md={4} key={metaLesson.id}>
+                <center>
+                    <Paper className={classes.paper}>
+                        <h2 style={{ marginTop: 5, marginBottom: 10 }}>{displayName}</h2>
+                        <Typography variant="body2" color="textSecondary" style={{ marginBottom: 12 }}>
+                            Meta lesson
+                        </Typography>
+
+                        <Button
+                            variant="contained"
+                            color="primary"
+                            className={classes.button}
+                            onClick={() => this.handleMetaLessonSelect(metaLesson)}
+                        >
+                            {translate("lessonSelection.onlyselect")}
+                        </Button>
+                    </Paper>
+                </center>
+            </Grid>
+        );
+    }
+
     render() {
         const { translate } = this.props;
         const { classes, courseNum } = this.props;
@@ -141,39 +211,36 @@ class LessonSelection extends React.Component {
                                                 </center>
                                             </Grid>
                                         )
-                                    : this.coursePlans[this.props.courseNum].lessons.map((lesson, i) => {
+                                    : (() => {
+                                        const course = this.coursePlans[this.props.courseNum];
+                                        const metaLessons = Array.isArray(course.metaLessons)
+                                            ? course.metaLessons
+                                            : [];
+
                                         return (
-                                            <Grid item xs={12} sm={6} md={4} key={i}>
-    <center>
-      <Paper className={classes.paper} style={{ position: 'relative' }}>
-        {/* top-right “view all problems” button */}
-        <IconButton
-          size="small"
-          style={{ position: 'absolute', top: 8, right: 8 }}
-          aria-label={`View all problems for lesson ${lesson.id}`}
-          onClick={() => this.props.history.push(`/lessons/${lesson.id}/problems`)}
-        >
-          <MenuBookIcon fontSize="small" />
-        </IconButton>
-
-        <h2 style={{ marginTop: 5, marginBottom: 10 }}>
-          {lesson.name.replace(/##/g, "")}
-        </h2>
-        <h3 style={{ marginTop: 5 }}>{lesson.topics}</h3>
-
-        <Button
-          variant="contained"
-          color="primary"
-          className={classes.button}
-          onClick={() => this.props.history.push(`/lessons/${lesson.id}`)}
-        >
-          {translate('lessonSelection.onlyselect')}
-        </Button>
-      </Paper>
-    </center>
-  </Grid>
-                                        )
-                                    })
+                                            <>
+                                                {course.lessons.map((lesson, i) =>
+                                                    this.renderLessonCard(lesson, i)
+                                                )}
+                                                {metaLessons.length > 0 && (
+                                                    <>
+                                                        <Grid item xs={12}>
+                                                            <Typography
+                                                                variant="h5"
+                                                                component="h3"
+                                                                style={{ marginTop: 8, marginBottom: 4 }}
+                                                            >
+                                                                Meta Lessons
+                                                            </Typography>
+                                                        </Grid>
+                                                        {metaLessons.map((metaLesson) =>
+                                                            this.renderMetaLessonCard(metaLesson)
+                                                        )}
+                                                    </>
+                                                )}
+                                            </>
+                                        );
+                                    })()
                                 }
                             </Grid>
                             <Spacer/>
