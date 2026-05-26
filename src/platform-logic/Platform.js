@@ -247,8 +247,113 @@ class Platform extends React.Component {
         return { completed, total, percent };
     }
     
+    async linkPrivilegedAssignment(lesson) {
+        const context = this.context;
+        console.log("valid privilege");
+        let err, response;
+        [err, response] = await to(
+            fetch(`${MIDDLEWARE_URL}/setLesson`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json",
+                },
+                body: JSON.stringify({
+                    token: context?.jwt || this.context?.jwt || "",
+                    lesson,
+                }),
+            })
+        );
+        if (err || !response) {
+            toast.error(
+                `Error setting lesson for assignment "${this.user.resource_link_title}"`
+            );
+            console.debug(err, response);
+            return false;
+        }
+        if (response.status !== 200) {
+            switch (response.status) {
+                case 400:
+                    const responseText = await response.text();
+                    let [message, ...addInfo] = responseText.split("|");
+                    if (
+                        Array.isArray(addInfo) &&
+                        addInfo[0].length > 1
+                    ) {
+                        addInfo = JSON.parse(addInfo[0]);
+                    }
+                    switch (message) {
+                        case "resource_already_linked":
+                            toast.error(
+                                `${addInfo.from} has already been linked to lesson ${addInfo.to}. Please create a new assignment.`,
+                                {
+                                    toastId:
+                                        ToastID.set_lesson_duplicate_error.toString(),
+                                }
+                            );
+                            return false;
+                        default:
+                            toast.error(`Error: ${responseText}`, {
+                                toastId:
+                                    ToastID.expired_session.toString(),
+                                closeOnClick: true,
+                            });
+                            return false;
+                    }
+                case 401:
+                    toast.error(
+                        `Your session has either expired or been invalidated, please reload the page to try again.`,
+                        {
+                            toastId: ToastID.expired_session.toString(),
+                        }
+                    );
+                    this.props.history.push("/session-expired");
+                    return false;
+                case 403:
+                    toast.error(
+                        `You are not authorized to make this action. (Are you an instructor?)`,
+                        {
+                            toastId: ToastID.not_authorized.toString(),
+                        }
+                    );
+                    return false;
+                default:
+                    toast.error(
+                        `Error setting lesson for assignment "${this.user.resource_link_title}." If reloading does not work, please contact us.`,
+                        {
+                            toastId:
+                                ToastID.set_lesson_unknown_error.toString(),
+                        }
+                    );
+                    return false;
+            }
+        }
+
+        const lessonLabel = lesson.topics || lesson.name || lesson.id;
+        toast.success(
+            `Successfully linked assignment "${this.user.resource_link_title}" to lesson ${lesson.id} "${lessonLabel}"`,
+            {
+                toastId: ToastID.set_lesson_success.toString(),
+            }
+        );
+        const responseText = await response.text();
+        let [message, ...addInfo] = responseText.split("|");
+        this.props.history.push(
+            `/assignment-already-linked?to=${addInfo.to}`
+        );
+        return true;
+    }
+
     async selectLesson(lesson, updateServer=true) {
         if (lesson && lesson.type === "meta_lesson") {
+            if (this.isPrivileged && updateServer) {
+                console.log("[LTI Meta Link TEST] linking meta lesson root:", lesson.id);
+                if (!this._isMounted) {
+                    console.debug("component not mounted, returning early (1)");
+                    return;
+                }
+                await this.linkPrivilegedAssignment(lesson);
+                return;
+            }
             return this.selectMetaLesson(lesson, updateServer);
         }
         const context = this.context;
@@ -260,97 +365,9 @@ class Platform extends React.Component {
             return;
         }
         if (this.isPrivileged) {
-            // from canvas or other LTI Consumers
-            console.log("valid privilege")
-            let err, response;
-            [err, response] = await to(
-                fetch(`${MIDDLEWARE_URL}/setLesson`, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                    },
-                    body: JSON.stringify({
-                        token: context?.jwt || this.context?.jwt || "",
-                        lesson,
-                    }),
-                })
-            );
-            if (err || !response) {
-                toast.error(
-                    `Error setting lesson for assignment "${this.user.resource_link_title}"`
-                );
-                console.debug(err, response);
+            const linked = await this.linkPrivilegedAssignment(lesson);
+            if (!linked) {
                 return;
-            } else {
-                if (response.status !== 200) {
-                    switch (response.status) {
-                        case 400:
-                            const responseText = await response.text();
-                            let [message, ...addInfo] = responseText.split("|");
-                            if (
-                                Array.isArray(addInfo) &&
-                                addInfo[0].length > 1
-                            ) {
-                                addInfo = JSON.parse(addInfo[0]);
-                            }
-                            switch (message) {
-                                case "resource_already_linked":
-                                    toast.error(
-                                        `${addInfo.from} has already been linked to lesson ${addInfo.to}. Please create a new assignment.`,
-                                        {
-                                            toastId:
-                                                ToastID.set_lesson_duplicate_error.toString(),
-                                        }
-                                    );
-                                    return;
-                                default:
-                                    toast.error(`Error: ${responseText}`, {
-                                        toastId:
-                                            ToastID.expired_session.toString(),
-                                        closeOnClick: true,
-                                    });
-                                    return;
-                            }
-                        case 401:
-                            toast.error(
-                                `Your session has either expired or been invalidated, please reload the page to try again.`,
-                                {
-                                    toastId: ToastID.expired_session.toString(),
-                                }
-                            );
-                            this.props.history.push("/session-expired");
-                            return;
-                        case 403:
-                            toast.error(
-                                `You are not authorized to make this action. (Are you an instructor?)`,
-                                {
-                                    toastId: ToastID.not_authorized.toString(),
-                                }
-                            );
-                            return;
-                        default:
-                            toast.error(
-                                `Error setting lesson for assignment "${this.user.resource_link_title}." If reloading does not work, please contact us.`,
-                                {
-                                    toastId:
-                                        ToastID.set_lesson_unknown_error.toString(),
-                                }
-                            );
-                            return;
-                    }
-                } else {
-                    toast.success(
-                        `Successfully linked assignment "${this.user.resource_link_title}" to lesson ${lesson.id} "${lesson.topics}"`,
-                        {
-                            toastId: ToastID.set_lesson_success.toString(),
-                        }
-                    );
-                    const responseText = await response.text();
-                    let [message, ...addInfo] = responseText.split("|");
-                    this.props.history.push(
-                        `/assignment-already-linked?to=${addInfo.to}`
-                    );
-                }
             }
         }
 
