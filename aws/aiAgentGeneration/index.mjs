@@ -1,7 +1,12 @@
 import dotenv from "dotenv";
 import OpenAI from "openai";
 import AWS from "aws-sdk";
-import { buildAgentPrompt, generateAgentResponse } from "./agent-logic.mjs";
+import {
+    buildAgentPrompt,
+    buildSuggestedQuestionsPrompt,
+    generateAgentResponse,
+    generateSuggestedQuestions,
+} from "./agent-logic.mjs";
 import crypto from "crypto";
 
 dotenv.config();
@@ -81,9 +86,10 @@ export const handler = awslambda.streamifyResponse(
         }
 
         let httpResponseStream;
+        let requestBody;
 
         try {
-            const requestBody = safeJsonParse(event.body);
+            requestBody = safeJsonParse(event.body);
             if (!requestBody) {
                 throw new Error("Invalid JSON body");
             }
@@ -95,6 +101,7 @@ export const handler = awslambda.streamifyResponse(
                 extracted = {},
                 conversationHistory = []
             } = requestBody;
+            const safeUserMessage = typeof userMessage === "string" ? userMessage : "";
             const condition = requestBody.condition ?? extracted?.condition;
             const lessonId = requestBody.lessonId ?? extracted?.lessonId;
             const chatPrompt = requestBody.chatPrompt ?? problemContext?.chatPrompt;
@@ -125,6 +132,65 @@ export const handler = awslambda.streamifyResponse(
                 return;
             }
 
+            if (requestBody?.requestType === "suggestedQuestions") {
+                const metadata = {
+                    statusCode: 200,
+                    headers: {
+                        "Content-Type": "application/json",
+                        "Access-Control-Allow-Origin": "*",
+                        "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
+                        "Access-Control-Allow-Headers": "Origin,Content-Type,Authorization",
+                    },
+                };
+                httpResponseStream = awslambda.HttpResponseStream.from(responseStream, metadata);
+
+                const startedAt = nowMs();
+                const suggestionsModel = process.env.SUGGESTIONS_MODEL || "gpt-4o-mini";
+                logEvent({
+                    eventType: "suggestions_started",
+                    sessionId,
+                    model: suggestionsModel,
+                    condition,
+                    lessonId,
+                    chatPrompt,
+                    chatDisplayMode,
+                    problemId: problemContext?.problemID,
+                    stepId: problemContext?.currentStep?.id,
+                    courseName: problemContext?.courseName,
+                });
+
+                const suggestionsPrompt = buildSuggestedQuestionsPrompt({
+                    problemContext,
+                    studentState,
+                });
+                const questions = await generateSuggestedQuestions(openai, suggestionsPrompt, {
+                    model: suggestionsModel,
+                });
+
+                logEvent({
+                    eventType: "suggestions_completed",
+                    sessionId,
+                    model: suggestionsModel,
+                    latencyMs: nowMs() - startedAt,
+                    questionCount: questions.length,
+                    condition,
+                    lessonId,
+                    chatPrompt,
+                    chatDisplayMode,
+                    problemId: problemContext?.problemID,
+                    stepId: problemContext?.currentStep?.id,
+                    courseName: problemContext?.courseName,
+                });
+
+                httpResponseStream.write(JSON.stringify({
+                    type: "suggestions",
+                    questions,
+                    timestamp: nowMs(),
+                }) + "\n");
+                httpResponseStream.end();
+                return;
+            }
+
             const metadata = {
                 statusCode: 200,
                 headers: {
@@ -143,7 +209,7 @@ export const handler = awslambda.streamifyResponse(
             const fullConversationHistory = [...existingConversation, ...conversationHistory];
             
             const agentPrompt = buildAgentPrompt({
-                userMessage,
+                userMessage: safeUserMessage,
                 problemContext,
                 studentState,
                 conversationHistory: fullConversationHistory,
@@ -175,7 +241,7 @@ export const handler = awslambda.streamifyResponse(
                 turnId,
                 userIdHash,
                 promptHash,
-                model: process.env.OPENAI_MODEL || undefined,
+                model: process.env.OPENAI_MODEL || "gpt-4o",
                 imagesCount,
                 condition,
                 lessonId,
@@ -187,10 +253,12 @@ export const handler = awslambda.streamifyResponse(
                 userMessagePreview: String(lastPreview || "").slice(0, 200),
             });
 
-            const response = await generateAgentResponse(openai, agentPrompt, httpResponseStream);
+            const response = await generateAgentResponse(openai, agentPrompt, httpResponseStream, {
+                model: process.env.OPENAI_MODEL || "gpt-4o",
+            });
 
             if (response) {
-                await updateConversationHistory(sessionId, userMessage, response);
+                await updateConversationHistory(sessionId, safeUserMessage, response);
             }
 
             // Append full transcript to S3 (research logging).
@@ -218,7 +286,7 @@ export const handler = awslambda.streamifyResponse(
                 lineObj: {
                     ...common,
                     role: "user",
-                    content: userMessage,
+                    content: safeUserMessage,
                     imagesCount,
                     timestampMs: startedAt,
                 },
@@ -254,10 +322,16 @@ export const handler = awslambda.streamifyResponse(
             });
 
         } catch (error) {
+            const isSuggestionsRequest = requestBody?.requestType === "suggestedQuestions";
             logEvent({
-                eventType: "turn_error",
+                eventType: isSuggestionsRequest ? "suggestions_error" : "turn_error",
                 message: error?.message,
                 stack: process.env.LOG_ERROR_STACK === "true" ? String(error?.stack || "") : undefined,
+                sessionId: requestBody?.sessionId,
+                chatDisplayMode: requestBody?.chatDisplayMode,
+                lessonId: requestBody?.lessonId ?? requestBody?.extracted?.lessonId,
+                problemId: requestBody?.problemContext?.problemID,
+                stepId: requestBody?.problemContext?.currentStep?.id,
             });
             console.error("Agent error:", error);
             if (httpResponseStream) {

@@ -33,6 +33,7 @@ import {Accordion, AccordionSummary, Typography} from "@material-ui/core";
 import ExpandMoreIcon from '@material-ui/icons/ExpandMore';
 import AgentIntegration from './AgentIntegration';
 import StandaloneChatView from './StandaloneChatView';
+import AvatarHelpPanel from './AvatarHelpPanel';
 
 class Problem extends React.Component {
     static defaultProps = {
@@ -87,6 +88,11 @@ class Problem extends React.Component {
             isHintPortalOpen: false,
             attemptHistory: {}, // { "Problem Title": { "Question Text": ["attempt1", "attempt2"] } }
             hintUsageByStep: {}, // { [stepIndex]: { stepId, hints: [{ id, title, text, type, viewed }] } }
+            avatarHintsByStep: {},
+            avatarHintStepIndex: null,
+            avatarVisibleHintIndex: null,
+            isAvatarHintVisible: false,
+            avatarHintRequestId: 0,
             standaloneExited: false,
         };
 
@@ -115,6 +121,15 @@ class Problem extends React.Component {
             hintUsageByStep: {
                 ...prevState.hintUsageByStep,
                 [stepIndex]: usage,
+            },
+        }));
+    };
+
+    handleAvatarHintsChange = (stepIndex, payload) => {
+        this.setState((prevState) => ({
+            avatarHintsByStep: {
+                ...prevState.avatarHintsByStep,
+                [stepIndex]: payload,
             },
         }));
     };
@@ -470,19 +485,44 @@ class Problem extends React.Component {
             expandedAccordion: isExpanded ? panel : null,
             hintToggleIndex: null,
             isHintPortalOpen: false,
+            isAvatarHintVisible: false,
         }));
     };
 
-    handleHintAvatarClick = (event) => {
-        if (
-            event &&
-            this.state.isHintPortalOpen &&
-            this.hintPortalRef?.current &&
-            this.hintPortalRef.current.contains(event.target)
-        ) {
-            return;
+    getAvatarHintTargetStepIndex = () => {
+        const activeStepData = this.getActiveStepData();
+        if (activeStepData && Number.isInteger(activeStepData.stepIndex)) {
+            return activeStepData.stepIndex;
+        }
+        return 0;
+    };
+
+    getNextAvatarHintIndex = (stepIndex) => {
+        const payload = this.state.avatarHintsByStep[stepIndex];
+        const hints = payload?.hints || [];
+        const currentIndex = Number.isInteger(this.state.avatarVisibleHintIndex)
+            ? this.state.avatarVisibleHintIndex
+            : -1;
+        const nextUnviewedIndex = hints.findIndex(
+            (hint, index) => index > currentIndex && !hint.viewed
+        );
+
+        if (nextUnviewedIndex >= 0) {
+            return nextUnviewedIndex;
         }
 
+        if (currentIndex + 1 < hints.length) {
+            return currentIndex + 1;
+        }
+
+        if (hints.length > 0) {
+            return Math.min(Math.max(currentIndex, 0), hints.length - 1);
+        }
+
+        return null;
+    };
+
+    handleHintAvatarClick = () => {
         this.setState((prevState, props) => {
             const steps = props.problem?.steps || [];
 
@@ -490,18 +530,76 @@ class Problem extends React.Component {
                 return null;
             }
 
-            const hasExpanded = prevState.expandedAccordion !== null;
-            const targetIndex = hasExpanded ? prevState.expandedAccordion : 0;
+            const targetIndex = this.getAvatarHintTargetStepIndex();
+            const currentHintIndex = prevState.avatarVisibleHintIndex;
+
+            if (Number.isInteger(currentHintIndex) && !prevState.isAvatarHintVisible) {
+                return {
+                    avatarHintStepIndex: prevState.avatarHintStepIndex ?? targetIndex,
+                    isAvatarHintVisible: true,
+                    hintToggleIndex: prevState.avatarHintStepIndex ?? targetIndex,
+                    expandedAccordion: prevState.avatarHintStepIndex ?? targetIndex,
+                };
+            }
+
+            const nextHintIndex = this.getNextAvatarHintIndex(targetIndex);
+
+            if (nextHintIndex == null) {
+                return null;
+            }
 
             return {
-                hintToggleTrigger: prevState.hintToggleTrigger + 1,
+                avatarHintStepIndex: targetIndex,
+                avatarVisibleHintIndex: nextHintIndex,
+                isAvatarHintVisible: true,
+                avatarHintRequestId: prevState.avatarHintRequestId + 1,
                 hintToggleIndex: targetIndex,
-                expandedAccordion: hasExpanded
-                    ? prevState.expandedAccordion
-                    : targetIndex,
-                isHintPortalOpen: false,
+                expandedAccordion: targetIndex,
             };
         });
+    };
+
+    handleAvatarHintPrevious = () => {
+        this.setState((prevState) => {
+            const currentIndex = prevState.avatarVisibleHintIndex;
+            if (!Number.isInteger(currentIndex) || currentIndex <= 0) {
+                return null;
+            }
+
+            return {
+                avatarVisibleHintIndex: currentIndex - 1,
+                isAvatarHintVisible: true,
+            };
+        });
+    };
+
+    handleAvatarHintNext = () => {
+        this.setState((prevState) => {
+            const stepIndex = prevState.avatarHintStepIndex ?? this.getAvatarHintTargetStepIndex();
+            const payload = prevState.avatarHintsByStep[stepIndex];
+            const hints = payload?.hints || [];
+            const currentIndex = Number.isInteger(prevState.avatarVisibleHintIndex)
+                ? prevState.avatarVisibleHintIndex
+                : -1;
+            const nextIndex = currentIndex + 1;
+
+            if (nextIndex < 0 || nextIndex >= hints.length) {
+                return null;
+            }
+
+            return {
+                avatarHintStepIndex: stepIndex,
+                avatarVisibleHintIndex: nextIndex,
+                isAvatarHintVisible: true,
+                avatarHintRequestId: prevState.avatarHintRequestId + 1,
+                hintToggleIndex: stepIndex,
+                expandedAccordion: stepIndex,
+            };
+        });
+    };
+
+    handleAvatarHintHide = () => {
+        this.setState({ isAvatarHintVisible: false });
     };
 
     handleHintAvatarKeyDown = (event) => {
@@ -532,6 +630,31 @@ class Problem extends React.Component {
         }
 
         const chatDisplayMode = this.props.lesson?.chat_display_mode || 'Off';
+        const avatarHintStepIndex = this.state.avatarHintStepIndex ?? this.getAvatarHintTargetStepIndex();
+        const avatarHintPayload = this.state.avatarHintsByStep[avatarHintStepIndex];
+        const avatarHints = avatarHintPayload?.hints || [];
+        const avatarVisibleHint = this.state.isAvatarHintVisible &&
+            Number.isInteger(this.state.avatarVisibleHintIndex)
+            ? avatarHints[this.state.avatarVisibleHintIndex]
+            : null;
+        const avatarHasHints = avatarHints.length > 0;
+        const avatarHasAnotherHint =
+            avatarHasHints &&
+            (!Number.isInteger(this.state.avatarVisibleHintIndex) ||
+                this.state.avatarVisibleHintIndex < avatarHints.length - 1);
+        const avatarHasPreviousHint =
+            Number.isInteger(this.state.avatarVisibleHintIndex) &&
+            this.state.avatarVisibleHintIndex > 0;
+        const avatarHintButtonLabel = this.state.isAvatarHintVisible
+            ? "Hide hint"
+            : Number.isInteger(this.state.avatarVisibleHintIndex)
+                ? "Show hint"
+                : "Get a hint";
+        const avatarHintRequest = {
+            requestId: this.state.avatarHintRequestId,
+            stepIndex: this.state.avatarHintStepIndex,
+            hintIndex: this.state.avatarVisibleHintIndex,
+        };
         if (chatDisplayMode === 'Full' && !this.state.standaloneExited) {
             return (
                 <StandaloneChatView
@@ -739,9 +862,12 @@ class Problem extends React.Component {
                                                     showCardHeader={false}
                                                     hintToggleTrigger={this.state.hintToggleTrigger}
                                                     hintToggleIndex={this.state.hintToggleIndex}
-                                                    hintPortalTarget={this.hintPortalRef}
+                                                    hintPortalTarget={chatDisplayMode === 'Avatar' ? null : this.hintPortalRef}
                                                     onHintToggle={this.handleHintToggleFromStep}
                                                     onHintUsageChange={this.handleHintUsageChange}
+                                                    avatarHintMode={chatDisplayMode === 'Avatar'}
+                                                    avatarHintRequest={chatDisplayMode === 'Avatar' ? avatarHintRequest : null}
+                                                    onAvatarHintsChange={this.handleAvatarHintsChange}
                                                 />
                                         </Accordion>
                                     </Element>
@@ -837,6 +963,32 @@ class Problem extends React.Component {
                         zIndex: 2,
                     }}
                     >
+                        {chatDisplayMode === 'Avatar' ? (
+                            <AvatarHelpPanel
+                                problem={problem}
+                                lesson={this.props.lesson}
+                                seed={seed}
+                                problemVars={this.props.problemVars}
+                                stepStates={this.state.stepStates}
+                                bktParams={this.bktParams}
+                                getActiveStepData={this.getActiveStepData}
+                                attemptHistory={this.state.attemptHistory}
+                                user={this.props.user}
+                                lessonMasteryMap={this.props.lessonMasteryMap}
+                                hintUsageByStep={this.state.hintUsageByStep}
+                                avatarHint={avatarVisibleHint}
+                                avatarHintPayload={avatarHintPayload}
+                                avatarHintIndex={this.state.avatarVisibleHintIndex}
+                                avatarHintButtonLabel={avatarHintButtonLabel}
+                                avatarHintButtonDisabled={!this.state.isAvatarHintVisible && !avatarHasHints}
+                                avatarHasPreviousHint={avatarHasPreviousHint}
+                                avatarHasNextHint={avatarHasAnotherHint}
+                                onGetHint={this.handleHintAvatarClick}
+                                onPreviousHint={this.handleAvatarHintPrevious}
+                                onNextHint={this.handleAvatarHintNext}
+                                onHideHint={this.handleAvatarHintHide}
+                            />
+                        ) : (
                         <div style={hintDisplayStyle}>
                         <button
                             style={{
@@ -915,6 +1067,7 @@ class Problem extends React.Component {
                         />
                         </div>
                     </div>
+                    )}
                     </Grid>
                 </Grid>
 

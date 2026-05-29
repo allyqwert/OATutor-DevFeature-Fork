@@ -211,6 +211,7 @@ class ProblemCard extends React.Component {
         // Start an asynchronous task
         this.updateBioInfo();
         console.log("student show hints status: ", this.showHints);
+        this.reportAvatarHints();
     }
 
     componentDidUpdate(prevProps) {
@@ -242,7 +243,59 @@ class ProblemCard extends React.Component {
                 activeHintType: "none",
             });
         }
+
+        if (
+            this.props.avatarHintRequest &&
+            this.props.avatarHintRequest.requestId !== prevProps.avatarHintRequest?.requestId &&
+            this.props.avatarHintRequest.stepIndex === this.index
+        ) {
+            this.revealAvatarHint(this.props.avatarHintRequest.hintIndex);
+        }
     }
+
+    getAvatarHintPayload = () => {
+        const stepVars = Object.assign(
+            {},
+            this.props.problemVars,
+            this.step.variabilization
+        );
+        return {
+            stepId: this.step.id,
+            stepIndex: this.index,
+            problemID: this.props.problemID,
+            seed: this.props.seed,
+            stepVars,
+            hints: this.state.hints.map((hint, index) => ({
+                id: hint.id,
+                title: hint.title,
+                text: hint.text,
+                type: hint.type,
+                variabilization: hint.variabilization,
+                displayIndex: index + 1,
+                viewed: this.state.hintsFinished[index] > 0,
+                isManual: hint.type !== "gptHint" && hint.type !== "bottomOut",
+            })),
+        };
+    };
+
+    reportAvatarHints = () => {
+        if (this.props.onAvatarHintsChange) {
+            this.props.onAvatarHintsChange(this.index, this.getAvatarHintPayload());
+        }
+    };
+
+    revealAvatarHint = (hintIndex) => {
+        if (!Number.isInteger(hintIndex) || !this.state.hints[hintIndex]) {
+            return;
+        }
+
+        if (this.giveDynamicHint && this.state.hints[hintIndex].type === "gptHint") {
+            this.generateHintFromGPT();
+        }
+
+        this.unlockHint(hintIndex, this.state.hints[hintIndex].type);
+        this.setState({ activeHintType: "none" }, this.reportAvatarHints);
+    };
 
     submit = () => {
         console.debug("submitting problem");
@@ -367,7 +420,6 @@ class ProblemCard extends React.Component {
 
     reportHintUsage = () => {
         const { onHintUsageChange } = this.props;
-        if (!onHintUsageChange) return;
 
         const hintsWithStatus = this.hints.map((hint, index) => ({
             id: hint.id,
@@ -381,10 +433,13 @@ class ProblemCard extends React.Component {
             isManual: hint.type !== "gptHint" && hint.type !== "bottomOut",
         }));
 
-        onHintUsageChange(this.index, {
-            stepId: this.step.id,
-            hints: hintsWithStatus,
-        });
+        if (onHintUsageChange) {
+            onHintUsageChange(this.index, {
+                stepId: this.step.id,
+                hints: hintsWithStatus,
+            });
+        }
+        this.reportAvatarHints();
     };
 
     unlockHint = (hintNum, hintType) => {
@@ -695,7 +750,7 @@ class ProblemCard extends React.Component {
         let inlineHints = null;
         let portalHints = null;
 
-        if (shouldShowHints) {
+        if (shouldShowHints && !this.props.avatarHintMode) {
             const hintsContent = (
                             <div className="Hints">
                                 <ErrorBoundary

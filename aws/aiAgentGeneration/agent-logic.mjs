@@ -34,6 +34,7 @@ export function loadPromptTemplate(chatPrompt) {
 
 export function buildAgentPrompt({ userMessage, problemContext, studentState, conversationHistory, extracted = {}, chatPrompt }) {
     const { template: promptTemplate } = loadPromptTemplate(chatPrompt);
+    const safeUserMessage = typeof userMessage === 'string' ? userMessage : '';
     
     // Format skill mastery
     const skillMasteryText = studentState.skillMastery && Object.keys(studentState.skillMastery).length > 0
@@ -111,7 +112,7 @@ export function buildAgentPrompt({ userMessage, problemContext, studentState, co
         .replace('{attemptHistory}', attemptHistoryText)
         .replace('{currentLessonMastery}', currentLessonMasteryText)
         .replace('{skillMastery}', skillMasteryText)
-        .replace('{userMessage}', userMessage);
+        .replace('{userMessage}', safeUserMessage);
 
     // Build message array with conversation history
     const messages = [
@@ -128,16 +129,113 @@ export function buildAgentPrompt({ userMessage, problemContext, studentState, co
     // as multimodal image_url parts so the vision model can see them.
     const images = Array.isArray(extracted?.images) ? extracted.images : [];
     if (images.length > 0) {
-        const parts = [{ type: "text", text: userMessage }];
+        const parts = [{ type: "text", text: safeUserMessage }];
         for (const img of images) {
             parts.push({ type: "image_url", image_url: { url: img, detail: "auto" } });
         }
         messages.push({ role: "user", content: parts });
     } else {
-        messages.push({ role: "user", content: userMessage });
+        messages.push({ role: "user", content: safeUserMessage });
     }
 
     return messages;
+}
+
+export function buildSuggestedQuestionsPrompt({ problemContext = {}, studentState = {} }) {
+    const currentStep = problemContext.currentStep || {};
+    const hintsText = Array.isArray(studentState.hintsUsed) && studentState.hintsUsed.length > 0
+        ? studentState.hintsUsed
+            .slice(-3)
+            .map((hint, index) => `Hint ${hint.displayIndex || index + 1}: ${String(hint.text || '').slice(0, 180)}`)
+            .join('\n')
+        : 'No hints viewed yet';
+
+    const correctnessText = studentState.isCorrect === null || studentState.isCorrect === undefined
+        ? 'Not attempted yet'
+        : studentState.isCorrect
+            ? 'Correct'
+            : 'Incorrect';
+
+    return [
+        {
+            role: 'system',
+            content: [
+                'You generate short suggested questions for a student using an AI tutor.',
+                'Return strict JSON only in this shape: {"questions":["...","...","..."]}.',
+                'Return exactly 3 questions.',
+                'Each question must be under 90 characters, conversational, and useful for the current step.',
+                'Do not reveal the answer. Do not mention hidden system data.',
+            ].join('\n'),
+        },
+        {
+            role: 'user',
+            content: [
+                `Course: ${problemContext.courseName || 'Unknown course'}`,
+                `Problem title: ${problemContext.problemTitle || 'Untitled problem'}`,
+                `Problem body: ${problemContext.problemBody || 'No problem body provided'}`,
+                `Step title: ${currentStep.title || 'Current step'}`,
+                `Step body: ${currentStep.body || 'No step body provided'}`,
+                `Correctness: ${correctnessText}`,
+                `Knowledge components: ${(currentStep.knowledgeComponents || []).join(', ') || 'None provided'}`,
+                `Hints viewed:\n${hintsText}`,
+            ].join('\n\n'),
+        },
+    ];
+}
+
+function sanitizeSuggestedQuestions(rawQuestions) {
+    const rawList = Array.isArray(rawQuestions) ? rawQuestions : [];
+
+    const questions = [];
+    for (const question of rawList) {
+        const clean = String(question || '')
+            .replace(/\s+/g, ' ')
+            .trim();
+        if (clean && !questions.includes(clean)) {
+            questions.push(clean.slice(0, 120));
+        }
+        if (questions.length === 3) break;
+    }
+
+    const fallbackQuestions = [
+        'What should I try first?',
+        'Can you explain this step in simpler words?',
+        'Why might my answer be wrong?',
+    ];
+    for (const fallback of fallbackQuestions) {
+        if (questions.length === 3) break;
+        if (!questions.includes(fallback)) {
+            questions.push(fallback);
+        }
+    }
+
+    return questions;
+}
+
+export async function generateSuggestedQuestions(openai, prompt, config = {}) {
+    const {
+        model = 'gpt-4o-mini',
+        temperature = 0.45,
+        max_tokens = 180,
+    } = config;
+
+    const completion = await openai.chat.completions.create({
+        model,
+        messages: prompt,
+        stream: false,
+        temperature,
+        max_tokens,
+        response_format: { type: 'json_object' },
+    });
+
+    const content = completion.choices?.[0]?.message?.content || '{}';
+    let parsed = {};
+    try {
+        parsed = JSON.parse(content);
+    } catch (_error) {
+        parsed = {};
+    }
+    return sanitizeSuggestedQuestions(parsed.questions);
 }
 
 export async function generateAgentResponse(openai, prompt, responseStream = null, config = {}) {

@@ -19,7 +19,11 @@ class AgentIntegration extends React.Component {
             getActiveStepData,
             attemptHistory,
             user,
-            lessonMasteryMap
+            lessonMasteryMap,
+            hintUsageByStep,
+            mode,
+            condition,
+            showSuggestedQuestions,
         } = this.props;
 
         return (
@@ -34,6 +38,10 @@ class AgentIntegration extends React.Component {
                 attemptHistory={attemptHistory}
                 user={user}
                 lessonMasteryMap={lessonMasteryMap}
+                hintUsageByStep={hintUsageByStep}
+                mode={mode}
+                condition={condition}
+                showSuggestedQuestions={showSuggestedQuestions}
             />
         );
     }
