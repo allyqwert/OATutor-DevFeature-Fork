@@ -253,6 +253,44 @@ const getToken = (req) => {
   return null;
 };
 
+const loadCoursePlansNoEditor = () => {
+  const coursePlans = require("coursePlans.json");
+  return coursePlans.filter(({ editor }) => !!!editor);
+};
+
+const findLessonOrMetaLessonById = (id, coursePlansNoEditor) => {
+  for (const course of coursePlansNoEditor) {
+    const lessons = course.lessons || [];
+    const metaLessons = course.metaLessons || [];
+    const lesson = lessons.find((entry) => entry.id === id);
+    /* the logic is to first search the regular lessons list for a lesson with matching id because a meta lesson might be stored directly inside course.lessons with type: "meta_lesson"
+    instead of in course.metaLessons
+    Then if we don't find a lesson in regular lessons list, we search the separate metaLessons array for a meta lesson with matching id */
+    if (lesson) { 
+      return { type: lesson.type === "meta_lesson" ? "meta_lesson" : "lesson", lesson, course };
+    }
+
+    const metaLesson = metaLessons.find((entry) => entry.id === id);
+    if (metaLesson) {
+      return { type: "meta_lesson", lesson: metaLesson, course };
+    }
+  }
+  return null; // returns null if no lesson or meta lesson is found with the given id
+};
+
+const getLessonOrMetaLessonLabel = (id, coursePlansNoEditor) => {
+  const found = findLessonOrMetaLessonById(id, coursePlansNoEditor);
+  if (!found) {
+    return null;
+  }
+
+  if (found.type === "meta_lesson") {
+    return found.lesson.name || found.lesson.id;
+  }
+
+  return found.lesson.name.split(" ")[1] + " " + found.lesson.topics;
+};
+
 /**
  * Meant for instructors to assign a lesson to a Canvas assignment
  */
@@ -341,23 +379,22 @@ app.post(
       return;
     }
 
-    // TODO: check if this works properly
-    const coursePlans = require("coursePlans.json");
-    const _coursePlansNoEditor = coursePlans.filter(({ editor }) => !!!editor);
-    let lessonName = null;
+    // TODO: define richer grade/reporting semantics for multi-lesson meta lessons.
+    const _coursePlansNoEditor = loadCoursePlansNoEditor();
+    const linkedLessonEntry = findLessonOrMetaLessonById(
+      linkedLesson,
+      _coursePlansNoEditor
+    );
+    const lessonName = getLessonOrMetaLessonLabel(
+      linkedLesson,
+      _coursePlansNoEditor
+    );
 
-    for (const course of _coursePlansNoEditor) {
-      const { lessons = [] } = course;
-      const idxOfFind = lessons.findIndex(
-        (lesson) => lesson.id === linkedLesson
+    if (linkedLessonEntry?.type === "meta_lesson") {
+      console.log(
+        "[LTI Meta postScore TEST] meta lesson label:",
+        lessonName || linkedLesson
       );
-      if (idxOfFind > -1) {
-        lessonName =
-          lessons[idxOfFind].name.split(" ")[1] +
-          " " +
-          lessons[idxOfFind].topics;
-        break;
-      }
     }
 
     const provider = new lti.Provider(consumer_key, consumer_secret);
