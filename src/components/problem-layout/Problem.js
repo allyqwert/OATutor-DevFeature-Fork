@@ -279,7 +279,11 @@ class Problem extends React.Component {
                 relevantKc[x] = this.bktParams[x].probMastery;
             });
 
-            this.updateCanvas(score, relevantKc);
+            if (this.props.postCanvasScore) {
+                this.props.postCanvasScore(score, relevantKc, "bkt");
+            } else {
+                this.updateCanvas(score, relevantKc);
+            }
         }
 
         const nextStepStates = {

@@ -909,7 +909,7 @@ class Platform extends React.Component {
                 console.debug("updateCanvas called because lesson is complete");
             }
 
-            this.updateCanvas(progressPercent, relevantKc);
+            this.postCanvasScore(progressPercent, relevantKc, "completion");
         }
 
         const nextProblem = this._nextProblem(context);
@@ -917,6 +917,181 @@ class Platform extends React.Component {
         if (!nextProblem && this.lesson?.isPartOfMetaLesson && this.metaLesson) {
             await this.handleMetaSubLessonComplete();
         }
+    };
+
+    isMetaLessonGradingContext() {
+        return Boolean(
+            this.lesson?.isPartOfMetaLesson &&
+                this.metaLesson &&
+                Array.isArray(this.metaLessonLessons) &&
+                this.metaLessonLessons.length > 0
+        );
+    }
+
+    getMetaLessonMasteryScore(context, fallbackScore) {
+        if (!this.isMetaLessonGradingContext()) {
+            return fallbackScore;
+        }
+
+        const objectiveKeys = new Set();
+        for (const subLessonId of this.metaLessonLessons) {
+            const lesson = findLessonById(subLessonId);
+            if (!lesson?.learningObjectives) {
+                continue;
+            }
+            Object.keys(lesson.learningObjectives).forEach((kc) =>
+                objectiveKeys.add(kc)
+            );
+        }
+
+        if (objectiveKeys.size === 0) {
+            return fallbackScore;
+        }
+
+        let sum = 0;
+        let count = 0;
+        for (const kc of objectiveKeys) {
+            const probMastery = context?.bktParams?.[kc]?.probMastery;
+            if (typeof probMastery === "number") {
+                sum += probMastery;
+                count += 1;
+            }
+        }
+
+        if (count === 0) {
+            return fallbackScore;
+        }
+
+        return sum / count;
+    }
+
+    /* Components like this, example below
+          {
+            "objectiveA": 0.82,
+            "objectiveB": 0.91,
+            "objectiveC": 0.76
+            ...
+          }
+    */
+
+    getMetaLessonComponents(context, fallbackComponents) {
+        if (!this.isMetaLessonGradingContext()) {
+            return fallbackComponents;
+        }
+
+        const objectiveKeys = new Set();
+        for (const subLessonId of this.metaLessonLessons) {
+            const lesson = findLessonById(subLessonId);
+            if (!lesson?.learningObjectives) {
+                continue;
+            }
+            Object.keys(lesson.learningObjectives).forEach((kc) =>
+                objectiveKeys.add(kc)
+            );
+        }
+
+        const components = {};
+        for (const kc of objectiveKeys) {
+            const probMastery = context?.bktParams?.[kc]?.probMastery;
+            if (typeof probMastery === "number") {
+                components[kc] = probMastery;
+            }
+        }
+
+        if (Object.keys(components).length === 0) {
+            return fallbackComponents;
+        }
+
+        return components;
+    }
+
+    getProblemCountsForLesson(lesson, completedProbs) {
+        if (!lesson) {
+            return { completed: 0, total: 0 };
+        }
+
+        const problems = this.problemIndex.problems.filter(({ lesson: lessonLabel }) =>
+            String(lessonLabel).includes(lesson.topics)
+        );
+        const completed =
+            completedProbs instanceof Set
+                ? completedProbs.size
+                : Array.isArray(completedProbs)
+                ? completedProbs.length
+                : 0;
+
+        return { completed, total: problems.length };
+    }
+
+    async getMetaLessonCompletionScore(fallbackScore) {
+        if (!this.isMetaLessonGradingContext()) {
+            return fallbackScore;
+        }
+
+        const { getByKey } = this.context.browserStorage;
+        let totalCompleted = 0;
+        let totalProblems = 0;
+
+        for (const subLessonId of this.metaLessonLessons) {
+            const lesson = findLessonById(subLessonId);
+            if (!lesson) {
+                continue;
+            }
+
+            let completedProbs = [];
+            if (this.lesson && subLessonId === this.lesson.id) {
+                completedProbs = this.completedProbs;
+            } else {
+                const saved = await getByKey(
+                    LESSON_PROGRESS_STORAGE_KEY(subLessonId)
+                ).catch(() => null);
+                if (Array.isArray(saved)) {
+                    completedProbs = saved;
+                } else if (saved instanceof Set) {
+                    completedProbs = saved;
+                }
+            }
+
+            const { completed, total } = this.getProblemCountsForLesson(
+                lesson,
+                completedProbs
+            );
+            totalCompleted += completed;
+            totalProblems += total;
+        }
+
+        if (totalProblems === 0) {
+            return fallbackScore;
+        }
+
+        return totalCompleted / totalProblems;
+    }
+
+    postCanvasScore = async (mastery, components, scoreType) => {
+        let finalMastery = mastery;
+        let finalComponents = components;
+
+        if (this.isMetaLessonGradingContext()) {
+            if (scoreType === "bkt") {
+                finalMastery = this.getMetaLessonMasteryScore(
+                    this.context,
+                    mastery
+                );
+                finalComponents = this.getMetaLessonComponents(
+                    this.context,
+                    components
+                );
+            } else if (scoreType === "completion") {
+                finalMastery = await this.getMetaLessonCompletionScore(mastery);
+            }
+
+            console.log("[Meta Grade TEST] scoreType:", scoreType);
+            console.log("[Meta Grade TEST] originalScore:", mastery);
+            console.log("[Meta Grade TEST] aggregatedScore:", finalMastery);
+            console.log("[Meta Grade TEST] components:", finalComponents);
+        }
+
+        await this.updateCanvas(finalMastery, finalComponents);
     };
 
     updateCanvas = async (mastery, components) => {
@@ -1193,6 +1368,7 @@ class Platform extends React.Component {
                                     seed={this.state.seed}
                                     lessonID={this.props.lessonID}
                                     displayMastery={this.displayMastery}
+                                    postCanvasScore={this.postCanvasScore}
                                     progressPercent={this.getProgressBarData().percent / 100}
                                 />
                             </ErrorBoundary>
