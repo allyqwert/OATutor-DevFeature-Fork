@@ -7,18 +7,20 @@ const __dirname = dirname(__filename);
 
 export const DEFAULT_CHAT_PROMPT = 'PROMPTv2.txt';
 
-const ALLOWED_CHAT_PROMPTS = new Set([
-    'PROMPTv1.txt',
-    'PROMPTv2.txt',
-]);
+// Temporarily disabled for prompt A/B testing (seminar demos).
+// Re-enable before production to restrict Lambda to known prompt files.
+// const ALLOWED_CHAT_PROMPTS = new Set([
+//     'PROMPTv1.txt',
+//     'PROMPTv2.txt',
+// ]);
 
 const promptTemplateCache = new Map();
 
 function resolveChatPromptFile(chatPrompt) {
     const name = String(chatPrompt || DEFAULT_CHAT_PROMPT).trim();
-    if (!ALLOWED_CHAT_PROMPTS.has(name)) {
-        return DEFAULT_CHAT_PROMPT;
-    }
+    // if (!ALLOWED_CHAT_PROMPTS.has(name)) {
+    //     return DEFAULT_CHAT_PROMPT;
+    // }
     return name;
 }
 
