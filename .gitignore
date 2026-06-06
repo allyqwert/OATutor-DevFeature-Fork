@@ -30,6 +30,7 @@ service-account-credentials.json
 sheets-service-account.json
 oatutor-firebase-adminsdk.json
 aws/aiAgentGeneration/.env
+src/config/firebaseConfig.js
 
 # Misc.
 **/.vscode

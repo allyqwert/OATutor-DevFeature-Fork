@@ -12,7 +12,6 @@ import crypto from "crypto";
 dotenv.config();
 
 const dynamoClient = new AWS.DynamoDB.DocumentClient();
-const s3 = new AWS.S3();
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 function sha256Hex(s) {
@@ -30,30 +29,6 @@ function logEvent(evt) {
 
 function safeJsonParse(str) {
     try { return JSON.parse(str); } catch { return null; }
-}
-
-function getPath(event) {
-    return (
-        event.rawPath ||
-        event.requestContext?.http?.path ||
-        event.path ||
-        ""
-    );
-}
-
-async function writeTranscriptLine({
-    bucket,
-    key,
-    lineObj,
-}) {
-    if (!bucket) return;
-    const line = JSON.stringify(lineObj) + "\n";
-    await s3.putObject({
-        Bucket: bucket,
-        Key: key,
-        Body: line,
-        ContentType: "application/x-ndjson",
-    }).promise();
 }
 
 export const handler = awslambda.streamifyResponse(
@@ -106,31 +81,6 @@ export const handler = awslambda.streamifyResponse(
             const lessonId = requestBody.lessonId ?? extracted?.lessonId;
             const chatPrompt = requestBody.chatPrompt ?? problemContext?.chatPrompt;
             const chatDisplayMode = requestBody.chatDisplayMode ?? extracted?.chatDisplayMode;
-
-            // Lightweight client lifecycle log endpoint.
-            // POST { eventType: 'chat_opened' | 'chat_closed' | ... , payload?: {...} }
-            const path = getPath(event);
-            const isLogEvent = requestBody?.eventType && !requestBody?.userMessage;
-            if (isLogEvent || path.endsWith("/log")) {
-                const metadata = {
-                    statusCode: 200,
-                    headers: {
-                        "Content-Type": "application/json",
-                        "Access-Control-Allow-Origin": "*",
-                        "Access-Control-Allow-Methods": "POST, GET, OPTIONS",
-                        "Access-Control-Allow-Headers": "Origin,Content-Type,Authorization",
-                    },
-                };
-                httpResponseStream = awslambda.HttpResponseStream.from(responseStream, metadata);
-                logEvent({
-                    ...requestBody,
-                    eventType: String(requestBody.eventType),
-                    source: "client",
-                });
-                httpResponseStream.write(JSON.stringify({ ok: true }) + "\n");
-                httpResponseStream.end();
-                return;
-            }
 
             if (requestBody?.requestType === "suggestedQuestions") {
                 const metadata = {
@@ -260,48 +210,6 @@ export const handler = awslambda.streamifyResponse(
             if (response) {
                 await updateConversationHistory(sessionId, safeUserMessage, response);
             }
-
-            // Append full transcript to S3 (research logging).
-            const transcriptBucket = process.env.TRANSCRIPT_BUCKET;
-            const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-            const turnKey = (role, ts) =>
-                `transcripts/${date}/sessionId=${sessionId}/turnId=${turnId ?? "na"}/${ts}-${role}.jsonl`;
-            const common = {
-                sessionId,
-                turnId,
-                userIdHash,
-                problemId: problemContext?.problemID,
-                stepId: problemContext?.currentStep?.id,
-                courseName: problemContext?.courseName,
-                promptHash,
-                condition,
-                lessonId,
-                chatPrompt,
-                chatDisplayMode,
-            };
-            // User line (do not store images bytes; only metadata).
-            await writeTranscriptLine({
-                bucket: transcriptBucket,
-                key: turnKey("user", startedAt),
-                lineObj: {
-                    ...common,
-                    role: "user",
-                    content: safeUserMessage,
-                    imagesCount,
-                    timestampMs: startedAt,
-                },
-            });
-            // Assistant line.
-            await writeTranscriptLine({
-                bucket: transcriptBucket,
-                key: turnKey("assistant", nowMs()),
-                lineObj: {
-                    ...common,
-                    role: "assistant",
-                    content: response,
-                    timestampMs: nowMs(),
-                },
-            });
 
             logEvent({
                 eventType: "turn_completed",

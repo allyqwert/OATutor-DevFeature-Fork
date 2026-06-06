@@ -45,27 +45,8 @@ export class AgentHelper {
         return request;
     }
 
-    /**
-     * Minimal client lifecycle logging. Ships a compact event payload to the
-     * same Lambda URL (handled server-side as a log-only request).
-     */
-    async logEvent(eventType, payload = {}) {
-        if (!this.agentEndpoint) return;
-        if (!this.sessionId) this.initializeSession();
-        try {
-            await fetch(this.agentEndpoint, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    eventType,
-                    sessionId: this.sessionId,
-                    turnId: this.turnId,
-                    ...payload,
-                }),
-            });
-        } catch (_e) {
-            // Logging should never break the UX.
-        }
+    getTurnId() {
+        return this.turnId;
     }
 
     /**
@@ -79,6 +60,7 @@ export class AgentHelper {
      */
     async sendMessage(userMessage, problemContext, studentState, extracted = {}, chatPrompt = 'PROMPTv2.txt', chatDisplayMode = 'Off', callbacks = {}) {
         const {
+            onTurnStarted = () => {},
             onChunkReceived = () => {},
             onSuccessfulCompletion = () => {},
             onError = () => {}
@@ -90,6 +72,9 @@ export class AgentHelper {
                 this.initializeSession();
             }
             this.turnId += 1;
+            if (callbacks.onTurnStarted) {
+                callbacks.onTurnStarted(this.turnId);
+            }
 
             // Validate endpoint
             if (!this.agentEndpoint) {

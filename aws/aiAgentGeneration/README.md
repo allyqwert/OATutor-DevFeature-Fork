@@ -6,7 +6,7 @@ This guide explains how each variable in the LLM prompt is accessed and passed t
 This Lambda powers the OATutor AI Tutor. It receives the current problem, active step, student state, attempts, hint usage, optional figure images, and chat mode metadata from the React app, then streams a response from OpenAI back to the browser.
 
 
-The current implementation supports normal chat turns, suggested-question generation, lightweight client event logging, DynamoDB conversation memory, and optional S3 transcript logging.
+The current implementation supports normal chat turns, suggested-question generation, DynamoDB conversation memory, CloudWatch operational logging, and Firebase chat history logging from the React app.
 
 ## System Shape
 
@@ -23,10 +23,10 @@ Key files:
 
 | File | Purpose |
 | --- | --- |
-| `index.mjs` | Lambda entrypoint, CORS, request routing, streaming response, CloudWatch logging, DynamoDB/S3 persistence |
+| `index.mjs` | Lambda entrypoint, CORS, request routing, streaming response, CloudWatch logging, DynamoDB session memory |
 | `agent-logic.mjs` | Prompt loading, chat prompt construction, multimodal message construction, suggested-question prompt and parsing |
 | `PROMPTv1.txt` / `PROMPTv2.txt` | Allowed chat prompt templates selected by lesson config |
-| `src/components/problem-layout/AgentHelper.js` | Frontend API client for chat turns, suggested questions, and event logs |
+| `src/components/problem-layout/AgentHelper.js` | Frontend API client for chat turns and suggested questions |
 | `src/components/problem-layout/AgentChatbox.js` | Shared chat UI used by Window, Avatar, and Full modes |
 
 ## Chat Display Modes
@@ -81,8 +81,9 @@ The Lambda:
 {"type":"complete","fullResponse":"Let's start...","timestamp":...}
 ```
 
-4. Stores the user/assistant turn back to DynamoDB.
-5. Optionally writes transcript lines to S3.
+4. Stores the user/assistant turn back to DynamoDB for multi-turn session memory.
+
+Research chat history (`chat_opened`, `chat_message`, etc.) is logged from the browser to Firebase `chatHistory` / `development_chatHistory` via `Firebase.logChatHistory()`.
 
 ### 2. Suggested Questions
 
@@ -119,15 +120,7 @@ The Lambda uses `buildSuggestedQuestionsPrompt()` and `generateSuggestedQuestion
 
 Suggestions use `SUGGESTIONS_MODEL` or default to `gpt-4o-mini`. They do not mutate conversation history. The frontend caches suggestions by problem, active step, and correctness so hint show/hide interactions do not repeatedly call the LLM.
 
-### 3. Client Event Logs
-
-Sent by `AgentHelper.logEvent()` for lifecycle telemetry such as `chat_opened`, `chat_closed`, `chat_cleared`, and `greeting_shown`.
-
-These requests either include `eventType` without `userMessage` or use a `/log` path. They are logged to CloudWatch and return:
-
-```json
-{"ok":true}
-```
+Client lifecycle events such as `chat_opened`, `chat_closed`, and `chat_message` are logged to Firebase from `AgentChatbox`, not to the Lambda.
 
 ## Multimodal Input
 
@@ -305,32 +298,28 @@ Lambda:
 | `OPENAI_MODEL` | `gpt-4o` | Streaming chat model; should support vision if images are sent |
 | `SUGGESTIONS_MODEL` | `gpt-4o-mini` | Non-streaming model for suggested questions |
 | `CONVERSATION_TABLE_NAME` | `agent-conversations` | DynamoDB table for session memory |
-| `TRANSCRIPT_BUCKET` | unset | Optional S3 bucket for NDJSON transcript lines |
 | `LOG_FULL_PROMPT` | `false` | If `true`, writes full prompt text to CloudWatch for debugging |
 | `LOG_ERROR_STACK` | `false` | If `true`, includes error stacks in CloudWatch error events |
 
 ## Persistence and Logging
 
-### DynamoDB Conversation Memory
+### DynamoDB Conversation Memory (keep this)
 
 `loadConversationHistory(sessionId)` reads previous turns from DynamoDB. `updateConversationHistory()` appends the new user and assistant messages after each completed chat turn.
 
-Items are written with a 24-hour TTL:
+This is **not** research logging. It is runtime session memory so Oski remembers earlier messages in the same chat session. The frontend sends `conversationHistory: []` on every request; the Lambda relies on DynamoDB to rebuild context across turns.
+
+Items are written with a 24-hour TTL so stale sessions auto-expire:
 
 ```javascript
 ttl: Math.floor(Date.now() / 1000) + (24 * 60 * 60)
 ```
 
-### S3 Transcripts
+Keep DynamoDB unless you redesign chat to send full history from the browser on every turn.
 
-If `TRANSCRIPT_BUCKET` is configured, the Lambda writes NDJSON-style objects under:
+### Firebase Chat History
 
-```text
-transcripts/YYYY-MM-DD/sessionId=<sessionId>/turnId=<turnId>/<timestamp>-user.jsonl
-transcripts/YYYY-MM-DD/sessionId=<sessionId>/turnId=<turnId>/<timestamp>-assistant.jsonl
-```
-
-User transcript lines include `imagesCount`, not raw image bytes.
+The React app writes research/analytics chat events to Firestore via `Firebase.logChatHistory()` in `src/components/Firebase.js`. Local dev uses `development_chatHistory`; production uses `chatHistory`.
 
 ### CloudWatch Events
 
@@ -344,7 +333,6 @@ User transcript lines include `imagesCount`, not raw image bytes.
 | `suggestions_started` | Suggested-question request starting |
 | `suggestions_completed` | Suggested questions returned |
 | `suggestions_error` | Suggested-question request failed |
-| client `eventType` | Browser lifecycle events sent by `AgentHelper.logEvent()` |
 
 ## Avatar Mode Hints
 

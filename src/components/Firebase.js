@@ -7,7 +7,7 @@ import {
     MAX_BUFFER_SIZE,
 } from "../config/config.js";
 
-import { initializeApp } from "firebase/app";
+import { getApp, getApps, initializeApp } from "firebase/app";
 import {
     arrayUnion,
     doc,
@@ -29,6 +29,41 @@ const GPTExperimentOutput = "GPTExperimentOutput";
 const feedbackOutput = "feedbacks";
 const siteLogOutput = "siteLogs";
 const focusStatus = "focusStatus";
+const chatHistoryOutput = "chatHistory";
+
+function isPlaceholderFirebaseConfig(credentials) {
+    const projectId = credentials?.projectId || "";
+    const apiKey = credentials?.apiKey || "";
+    return (
+        projectId.includes("[projId]") ||
+        apiKey.includes("[apikey]") ||
+        !projectId ||
+        !apiKey
+    );
+}
+
+function isFirestoreFieldValue(value) {
+    return (
+        value &&
+        typeof value === "object" &&
+        typeof value._methodName === "string"
+    );
+}
+
+function sanitizeForFirestore(value) {
+    if (value === undefined) return null;
+    if (isFirestoreFieldValue(value)) return value;
+    if (value === null || typeof value !== "object") return value;
+    if (Array.isArray(value)) {
+        return value.map(sanitizeForFirestore);
+    }
+    return Object.fromEntries(
+        Object.entries(value).map(([key, val]) => [
+            key,
+            sanitizeForFirestore(val),
+        ])
+    );
+}
 
 class Firebase {
     constructor(oats_user_id, credentials, treatment, siteVersion, ltiContext) {
@@ -36,7 +71,14 @@ class Firebase {
             console.debug("Not using firebase for logging");
             return;
         }
-        const app = initializeApp(credentials);
+        if (isPlaceholderFirebaseConfig(credentials)) {
+            console.error(
+                "[Firebase] Logging is enabled but firebaseConfig.js still has placeholder values. " +
+                    "Copy your project config from Firebase Console → Project settings → Your apps, " +
+                    "or set REACT_APP_FIREBASE_CONFIG in .env, then restart npm start."
+            );
+        }
+        const app = getApps().length ? getApp() : initializeApp(credentials);
 
         this.oats_user_id = oats_user_id;
         this.db = getFirestore(app);
@@ -110,22 +152,48 @@ class Firebase {
     */
     async writeData(_collection, data) {
         if (!ENABLE_FIREBASE) return;
+        if (!this.db) {
+            console.warn(
+                `[Firebase] Skipping write to "${_collection}" because Firestore is not initialized.`
+            );
+            return;
+        }
+
         const collection = this.getCollectionName(_collection);
-        const payload = this.addMetaData(data);
+        let payload;
+        try {
+            payload = sanitizeForFirestore(this.addMetaData(data));
+        } catch (err) {
+            console.warn(`Firebase write failed while building payload for "${collection}"`, err);
+            return;
+        }
 
         if (IS_STAGING_OR_DEVELOPMENT) {
-            // console.log("payload: ", payload);
             console.debug("Writing this payload to firebase: ", payload);
         }
 
-        await setDoc(
-            doc(this.db, collection, this._getReadableID()),
-            payload
-        ).catch((err) => {
-            console.log("a non-critical error occurred.");
-            console.log("Error is: ", err);
-            console.debug(err);
-        });
+        const docId = this._getReadableID();
+        try {
+            await Promise.race([
+                setDoc(doc(this.db, collection, docId), payload),
+                new Promise((_, reject) =>
+                    setTimeout(
+                        () =>
+                            reject(
+                                new Error(
+                                    "Firestore write timed out after 10s (check firebaseConfig.js and security rules)"
+                                )
+                            ),
+                        10000
+                    )
+                ),
+            ]);
+            if (_collection === chatHistoryOutput) {
+                console.log(`[chatHistory] saved to "${collection}"`, payload.eventType);
+            }
+        } catch (err) {
+            console.warn(`Firebase write failed for "${collection}"`, err);
+        }
     }
 
     /**
@@ -368,6 +436,15 @@ class Firebase {
             data,
             true
         );
+    }
+
+    logChatHistory(data) {
+        if (!DO_LOG_DATA) return;
+        const collection = this.getCollectionName(chatHistoryOutput);
+        if (process.env.NODE_ENV === 'development') {
+            console.log(`[chatHistory] writing to "${collection}"`, data?.eventType || data);
+        }
+        return this.writeData(chatHistoryOutput, data);
     }
 
     submitFeedback(

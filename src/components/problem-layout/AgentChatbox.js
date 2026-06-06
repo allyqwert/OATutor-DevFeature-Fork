@@ -17,6 +17,7 @@ import {
 } from '@material-ui/icons';
 import { ReactComponent as OskiAvatar } from '../../assets/avatar_default_state.svg';
 import { ReactComponent as SendArrowIcon } from '../../assets/arrow.svg';
+import { ThemeContext } from '../../config/config.js';
 
 const CHAT_THEME = {
     primary: '#4c7d9f',
@@ -270,6 +271,8 @@ const styles = (theme) => ({
 });
 
 class AgentChatbox extends React.Component {
+    static contextType = ThemeContext;
+
     constructor(props) {
         super(props);
         this.state = {
@@ -296,7 +299,23 @@ class AgentChatbox extends React.Component {
         courseName: this.props.lesson?.courseName,
         lessonId: this.props.lesson?.id,
         condition: this.props.condition,
+        chatPrompt: this.props.lesson?.chat_prompt || 'PROMPTv2.txt',
+        stepId: this.getProblemContext()?.currentStep?.id || null,
     });
+
+    logChatEvent = (eventType, extra = {}) => {
+        const firebase = this.context?.firebase;
+        if (!firebase?.logChatHistory) return;
+
+        firebase.logChatHistory({
+            eventType,
+            sessionId: agentHelper.getSessionId(),
+            turnId: agentHelper.getTurnId(),
+            timestampMs: Date.now(),
+            ...this.getChatTelemetry(),
+            ...extra,
+        });
+    };
 
     componentDidMount() {
         agentHelper.initializeSession();
@@ -306,8 +325,7 @@ class AgentChatbox extends React.Component {
             this.setState((prev) => ({
                 messages: prev.messages.length === 0 ? this.buildGreetingMessages() : prev.messages,
             }));
-            agentHelper.logEvent('chat_opened', {
-                ...this.getChatTelemetry(),
+            this.logChatEvent('chat_opened', {
                 embedded: true,
             });
         }
@@ -356,7 +374,7 @@ class AgentChatbox extends React.Component {
         const title = this.props.problem?.title;
         const subject = title ? `**${title}**` : 'this problem';
         // Client-side telemetry: greeting was shown (first open / after clear).
-        agentHelper.logEvent('greeting_shown', this.getChatTelemetry());
+        this.logChatEvent('greeting_shown');
         return [{
             id: `greeting-${Date.now()}`,
             role: 'assistant',
@@ -413,11 +431,15 @@ class AgentChatbox extends React.Component {
                 suggestedQuestions: questions.slice(0, 3),
                 isLoadingSuggestedQuestions: false,
             });
+            this.logChatEvent('suggestions_completed', {
+                questions: questions.slice(0, 3),
+            });
         } catch (_error) {
             this.setState({
                 suggestedQuestions: FALLBACK_SUGGESTED_QUESTIONS,
                 isLoadingSuggestedQuestions: false,
             });
+            this.logChatEvent('suggestions_error');
         }
     };
 
@@ -429,13 +451,11 @@ class AgentChatbox extends React.Component {
             // it alone.
             const needsGreeting = opening && prevState.messages.length === 0;
             if (opening) {
-                agentHelper.logEvent('chat_opened', {
-                    ...this.getChatTelemetry(),
+                this.logChatEvent('chat_opened', {
                     hasExistingMessages: prevState.messages.length > 0,
                 });
             } else {
-                agentHelper.logEvent('chat_closed', {
-                    ...this.getChatTelemetry(),
+                this.logChatEvent('chat_closed', {
                     hadMessages: prevState.messages.length > 0,
                     messagesCount: prevState.messages.length,
                 });
@@ -449,7 +469,7 @@ class AgentChatbox extends React.Component {
 
     clearConversation = () => {
         agentHelper.initializeSession();
-        agentHelper.logEvent('chat_cleared', this.getChatTelemetry());
+        this.logChatEvent('chat_cleared');
         // Reset to a fresh greeting rather than an empty pane so the student
         // is always met with an invitation to ask, including after switching
         // problems (componentDidUpdate calls this on problem change).
@@ -559,6 +579,7 @@ class AgentChatbox extends React.Component {
         const chatDisplayMode = this.props.lesson?.chat_display_mode ?? 'Off';
 
         const assistantMessageId = `assistant-${messageId}`;
+        const turnStart = Date.now();
 
         // Send to agent
         try {
@@ -570,6 +591,14 @@ class AgentChatbox extends React.Component {
                 chatPrompt,
                 chatDisplayMode,
                 {
+                    onTurnStarted: (turnId) => {
+                        this.logChatEvent('chat_message', {
+                            role: 'user',
+                            turnId,
+                            content: userMessage,
+                            imagesCount: images.length,
+                        });
+                    },
                     onChunkReceived: (partialResponse) => {
                         this.setState(prevState => ({
                             messages: prevState.messages.map(msg =>
@@ -589,6 +618,13 @@ class AgentChatbox extends React.Component {
                             isGenerating: false,
                             isTyping: false
                         }));
+                        this.logChatEvent('chat_message', {
+                            role: 'assistant',
+                            turnId: agentHelper.getTurnId(),
+                            content: fullResponse,
+                            latencyMs: Date.now() - turnStart,
+                            responseCharCount: fullResponse.length,
+                        });
                     },
                     onError: (error) => {
                         this.setState(prevState => ({
@@ -605,6 +641,10 @@ class AgentChatbox extends React.Component {
                             isGenerating: false,
                             isTyping: false
                         }));
+                        this.logChatEvent('turn_error', {
+                            turnId: agentHelper.getTurnId(),
+                            message: error.message,
+                        });
                     }
                 }
             );
