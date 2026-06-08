@@ -19,7 +19,7 @@
     "http2": "~3.3.7",
     "list-react-files": "~0.2.0",
     "localforage": "~1.10.0",
-    "mathlive": "^0.98.3",
+    "mathlive": "^0.109.2",
     "random-seed": "~0.3.0",
     "react": "~16.14.0",
     "react-cursor-position": "~3.0.3",
@@ -34,11 +34,11 @@
     "rehype-katex": "^5.0.0",
     "remark-gfm": "^1.0.0",
     "remark-math": "^4.0.0",
+    "speech-rule-engine": "^5.0.0-alpha.8",
     "typeface-roboto": "~0.0.75",
     "underscore": "~1.13.1",
     "universal-cookie": "~4.0.4",
-    "use-window-focus": "^1.4.1",
-    "speech-rule-engine": "^5.0.0-alpha.8"
+    "use-window-focus": "^1.4.1"
   },
   "scripts": {
     "start": "cross-env PORT=3001 react-app-rewired start",
@@ -76,7 +76,6 @@
     "@types/react-resizable": "~1.7.4",
     "cross-env": "^7.0.3",
     "gh-pages": "~2.2.0",
-    "mathlive": "^0.98.3",
     "react-app-rewire-alias": "~1.1.7",
     "react-app-rewired": "~2.2.1",
     "react-window": "^1.8.11",
