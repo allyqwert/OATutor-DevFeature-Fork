@@ -159,6 +159,8 @@ class HintSystem extends React.Component {
                 {hints.map((hint, i) => (
                     <Accordion
                         key={`${problemID}-${hint.id}`}
+                        className={classes.accordion}
+                        classes={{ expanded: classes.accordionExpanded }}
                         onChange={(event, expanded) =>
                             this.unlockHint(event, expanded, i)
                         }
@@ -174,6 +176,7 @@ class HintSystem extends React.Component {
                         defaultExpanded={false}
                     >
                         <AccordionSummary
+                            className={classes.accordionSummary}
                             expandIcon={<ExpandMoreIcon />}
                             aria-controls="panel1a-content"
                             id="panel1a-header"
@@ -185,7 +188,7 @@ class HintSystem extends React.Component {
                                 {translate("hintsystem.hint") + (i + 1)}
                             </Typography>
                         </AccordionSummary>
-                        <AccordionDetails >
+                        <AccordionDetails className={classes.accordionDetails}>
                         <div style={{ width: "100%" }}>
                             <Typography
                                 component={"span"}
@@ -324,7 +327,46 @@ const styles = (theme) => ({
     },
     heading: {
         fontSize: theme.typography.pxToRem(15),
-        fontWeight: theme.typography.fontWeightRegular,
+        fontWeight: 600,
+        color: "#3f7091",
+    },
+    accordion: {
+        backgroundColor: "#ffffff",
+        border: "1px solid #a3c5de",
+        borderRadius: 6,
+        marginBottom: 6,
+        boxShadow: "none",
+        overflow: "hidden",
+        "&:before": {
+            display: "none",
+        },
+        "&.Mui-disabled": {
+            backgroundColor: "#f5f8fb",
+            borderColor: "#d4e3ef",
+        },
+    },
+    accordionExpanded: {
+        margin: "0 0 6px 0",
+    },
+    accordionSummary: {
+        minHeight: 40,
+        backgroundColor: "#ffffff",
+        borderRadius: 6,
+        "&.Mui-expanded": {
+            minHeight: 40,
+            backgroundColor: "#eef4fa",
+            borderRadius: "6px 6px 0 0",
+        },
+        "& .MuiAccordionSummary-content": {
+            margin: "10px 0",
+        },
+    },
+    accordionDetails: {
+        backgroundColor: "#eef4fa",
+        borderTop: "1px solid #a3c5de",
+        borderRadius: "0 0 6px 6px",
+        paddingTop: theme.spacing(1.5),
+        paddingBottom: theme.spacing(1.5),
     },
 });
 

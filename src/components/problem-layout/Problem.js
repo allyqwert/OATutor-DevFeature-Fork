@@ -14,7 +14,7 @@ import {
 import styles from "./common-styles.js";
 import { NavLink } from "react-router-dom";
 import withTranslation from "../../util/withTranslation.js"
-import avatar from "../../assets/avatar_default_state.svg";
+import raiseHandIcon from "../../assets/raise.svg";
 
 import {
     CANVAS_WARNING_STORAGE_KEY,
@@ -86,6 +86,8 @@ class Problem extends React.Component {
             hintToggleTrigger: 0,
             hintToggleIndex: null,
             isHintPortalOpen: false,
+            hasHintBeenOpened: false,
+            isHintHovering: false,
             attemptHistory: {}, // { "Problem Title": { "Question Text": ["attempt1", "attempt2"] } }
             hintUsageByStep: {}, // { [stepIndex]: { stepId, hints: [{ id, title, text, type, viewed }] } }
             avatarHintsByStep: {},
@@ -522,7 +524,44 @@ class Problem extends React.Component {
         return null;
     };
 
-    handleHintAvatarClick = () => {
+    handleHintAvatarClick = (event) => {
+        const chatDisplayMode = this.props.lesson?.chat_display_mode || 'Off';
+
+        if (chatDisplayMode !== 'Avatar') {
+            if (
+                event &&
+                this.state.isHintPortalOpen &&
+                this.hintPortalRef?.current &&
+                this.hintPortalRef.current.contains(event.target)
+            ) {
+                return;
+            }
+
+            this.setState((prevState, props) => {
+                const steps = props.problem?.steps || [];
+
+                if (steps.length === 0) {
+                    return null;
+                }
+
+                const hasExpanded = prevState.expandedAccordion !== null;
+                const targetIndex = hasExpanded
+                    ? prevState.expandedAccordion
+                    : this.getAvatarHintTargetStepIndex();
+
+                return {
+                    hintToggleTrigger: prevState.hintToggleTrigger + 1,
+                    hintToggleIndex: targetIndex,
+                    expandedAccordion: hasExpanded
+                        ? prevState.expandedAccordion
+                        : targetIndex,
+                    isHintPortalOpen: false,
+                    hasHintBeenOpened: true,
+                };
+            });
+            return;
+        }
+
         this.setState((prevState, props) => {
             const steps = props.problem?.steps || [];
 
@@ -616,7 +655,16 @@ class Problem extends React.Component {
         this.setState((prevState) => ({
             isHintPortalOpen: isOpen,
             hintToggleIndex: isOpen ? index : null,
+            hasHintBeenOpened: isOpen ? true : prevState.hasHintBeenOpened,
         }));
+    };
+
+    handleHintHoverStart = () => {
+        this.setState({ isHintHovering: true });
+    };
+
+    handleHintHoverEnd = () => {
+        this.setState({ isHintHovering: false });
     };
 
     render() {
@@ -624,7 +672,10 @@ class Problem extends React.Component {
         const { classes, problem, seed } = this.props;
         const [oerLink, oerName, licenseLink, licenseName] =
             this.getOerLicense();
-        const { isHintPortalOpen } = this.state;
+        const { isHintPortalOpen, hasHintBeenOpened, isHintHovering } = this.state;
+        const showHintPromoBubble =
+            !isHintPortalOpen && (!hasHintBeenOpened || isHintHovering);
+        const showHintCardChrome = isHintPortalOpen || showHintPromoBubble;
         if (problem == null) {
             return <div></div>;
         }
@@ -677,55 +728,77 @@ class Problem extends React.Component {
 
         const drawerOpen = this.props.drawerOpen;
         const layoutGap = drawerOpen ? 3 : 4;
-        const hintStickTop = 200;
+        const hintStickTop = "calc(50vh - 120px)";
         const hintDisplayStyle = {
             position: "sticky",
             top: hintStickTop,
             display: "flex",
             flexDirection: "column",
-            alignItems: "stretch",
-            width: "95%",
+            alignItems: "flex-end",
+            width: "100%",
             maxWidth: "100%",
             maxHeight: "70vh",
-            transition: "all 0.4s ease",
         };
 
         const bubbleContainerStyle = {
             position: "relative",
             display: "flex",
             flexDirection: "column",
-            alignItems: isHintPortalOpen ? "stretch" : "flex-end",
-            justifyContent: isHintPortalOpen ? "flex-end" : "flex-start",
-            width: isHintPortalOpen ? "100%" : "auto",
-            flexGrow: 1,
+            alignItems: "flex-end",
+            width: "100%",
         };
 
-        const speechBubbleStyle = {
-            background: "#FFF3CC",
-            color: "#222",
-            padding: "12px 16px",
-            borderRadius: 8,
-            boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+        const hintThemePrimary = "#4c7d9f";
+        const hintThemePrimaryDark = "#3f7091";
+        const hintThemeSurface = "#eef4fa";
+        const hintThemePale = "#a3c5de";
+
+        const hintCardWrapperStyle = {
             position: "relative",
-            width: isHintPortalOpen ? "100%" : "auto",
-            maxWidth: isHintPortalOpen ? "100%" : 240,
-            // height: isHintPortalOpen ? "70vh" : "auto",
-            maxHeight: "60vh",
-            alignSelf: isHintPortalOpen ? "stretch" : "flex-end",
-            textAlign: "left",
+            width: "100%",
+            maxWidth: isHintPortalOpen ? "100%" : 300,
+            paddingTop: 28,
+            boxSizing: "border-box",
+            transition: "max-width 0.35s cubic-bezier(0.4, 0, 0.2, 1)",
             cursor: "pointer",
-            transition: "all 0.4s cubic-bezier(0.25, 0.1, 0.25, 1)",
-            marginTop: isHintPortalOpen ? "auto" : 0,
+        };
+
+        const hintCardStyle = {
+            background: isHintPortalOpen ? hintThemeSurface : "transparent",
+            color: "#222",
+            border: showHintCardChrome
+                ? `1px solid ${hintThemePrimary}`
+                : "none",
+            padding: isHintPortalOpen
+                ? "8px 10px"
+                : showHintPromoBubble
+                    ? "14px 10px 6px"
+                    : 0,
+            borderRadius: 8,
+            boxShadow: isHintPortalOpen
+                ? "0 4px 16px rgba(76, 125, 159, 0.14)"
+                : "none",
+            position: "relative",
+            width: "100%",
+            maxHeight: "60vh",
+            overflow: "visible",
+            textAlign: "left",
+            transition:
+                "background-color 0.25s ease, box-shadow 0.25s ease, padding 0.25s ease",
             zIndex: 2,
+            fontFamily: '"Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+            boxSizing: "border-box",
         };
 
         const hintPortalStyle = {
-            display: isHintPortalOpen ? "block" : "none",
             width: "100%",
-            height: isHintPortalOpen ? "50vh" : "auto",
+            maxHeight: isHintPortalOpen ? "50vh" : 0,
+            opacity: isHintPortalOpen ? 1 : 0,
             marginTop: isHintPortalOpen ? 8 : 0,
-            maxHeight: "60vh",
-            overflowY: "auto",
+            overflowY: isHintPortalOpen ? "auto" : "hidden",
+            overflowX: "hidden",
+            transition:
+                "max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease, margin-top 0.3s ease",
         };
 
         return (
@@ -990,28 +1063,14 @@ class Problem extends React.Component {
                             />
                         ) : (
                         <div style={hintDisplayStyle}>
-                        <button
-                            style={{
-                                backgroundColor: "#4E7DAA", // similar blue tone
-                                color: "white",
-                                border: "none",
-                                borderRadius: "9999px", // fully rounded edges
-                                padding: "2px 14px",
-                                fontSize: "12px",
-                                fontWeight: 500,
-                                cursor: "pointer",
-                                alignSelf: "flex-end",
-                                marginBottom: "56px",
-                            }}
-                            >
-                            OpenAI o1
-                        </button>
                         <div
                             style={bubbleContainerStyle}
+                            onMouseEnter={this.handleHintHoverStart}
+                            onMouseLeave={this.handleHintHoverEnd}
                         >
-                        {/* Speech Bubble */}
+                        {/* Hints card */}
                         <div
-                        style={speechBubbleStyle}
+                        style={hintCardWrapperStyle}
                         {...stagingProp({
                             "data-selenium-target": "hint-avatar-toggle",
                         })}
@@ -1019,13 +1078,67 @@ class Problem extends React.Component {
                         tabIndex={0}
                         aria-expanded={this.state.isHintPortalOpen}
                         aria-controls="hint-portal-content"
+                        aria-label="Toggle hints"
                         onClick={this.handleHintAvatarClick}
                         onKeyDown={this.handleHintAvatarKeyDown}
-                        aria-label="Toggle hints"
+                        onFocus={this.handleHintHoverStart}
+                        onBlur={this.handleHintHoverEnd}
                         >
-                        <p style={{ margin: 0, fontWeight: 600 }}>Stuck on the problem?</p>
-                        {!this.state.isHintPortalOpen && (
-                            <p style={{ margin: 0 }}>Give me a tap and I am happy to help!</p>
+                        {/* Raise-hand badge: full circle is clickable (not just the icon) */}
+                        <div
+                            style={{
+                                width: 52,
+                                height: 52,
+                                borderRadius: "50%",
+                                backgroundColor: hintThemeSurface,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                position: "absolute",
+                                top: 2,
+                                right: 22,
+                                zIndex: 3,
+                                cursor: "pointer",
+                            }}
+                        >
+                            <img
+                                src={raiseHandIcon}
+                                alt=""
+                                aria-hidden="true"
+                                style={{
+                                    width: 34,
+                                    height: 34,
+                                }}
+                            />
+                        </div>
+                        <div style={hintCardStyle}>
+                        {(isHintPortalOpen || showHintPromoBubble) && (
+                        <p style={{ margin: 0, fontWeight: 700, fontSize: 15, lineHeight: 1.2, color: hintThemePrimaryDark }}>
+                            Hints
+                        </p>
+                        )}
+                        {showHintPromoBubble && (
+                            <>
+                                <p style={{ margin: "2px 0 0", fontSize: 12, lineHeight: 1.3, color: "#5c6b7a", whiteSpace: "nowrap" }}>
+                                    Pre-written hints to help you with the problem.
+                                </p>
+                                <span
+                                    style={{
+                                        display: "inline-block",
+                                        marginTop: 4,
+                                        padding: "2px 7px",
+                                        borderRadius: 9999,
+                                        border: `1px solid ${hintThemePale}`,
+                                        backgroundColor: "#ffffff",
+                                        color: hintThemePrimaryDark,
+                                        fontSize: 11,
+                                        fontWeight: 600,
+                                        lineHeight: 1.2,
+                                    }}
+                                >
+                                    Affects your mastery score
+                                </span>
+                            </>
                         )}
                         <div
                             ref={this.hintPortalRef}
@@ -1036,35 +1149,8 @@ class Problem extends React.Component {
                             aria-hidden={!this.state.isHintPortalOpen}
                             style={hintPortalStyle}
                         />
-
-                        {/* Tail at top right, pointing upward */}
-                        <div
-                            style={{
-                                position: "absolute",
-                                top: "-8px",
-                                right: "24px",
-                                width: 0,
-                                height: 0,
-                                borderLeft: "8px solid transparent",
-                                borderRight: "8px solid transparent",
-                                borderBottom: "8px solid #FFF3CC"
-                            }}
-                        />
                         </div>
-
-                        {/* Avatar Icon */}
-                        <img
-                        src={avatar}
-                        alt="Whisper"
-                        style={{
-                            width: 64,
-                            height: 64,
-                            position: "absolute",
-                            top: "-55px",
-                            right: "-10px",
-                            zIndex: 0,
-                        }}
-                        />
+                        </div>
                         </div>
                     </div>
                     )}

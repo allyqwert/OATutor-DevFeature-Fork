@@ -17,6 +17,7 @@ import {
 } from '@material-ui/icons';
 import { ReactComponent as OskiAvatar } from '../../assets/avatar_default_state.svg';
 import { ReactComponent as SendArrowIcon } from '../../assets/arrow.svg';
+import { ReactComponent as ChatBubble } from '../../assets/chat-bubble.svg';
 import { ThemeContext } from '../../config/config.js';
 
 const CHAT_THEME = {
@@ -28,6 +29,9 @@ const CHAT_THEME = {
     white: '#FFFFFF',
     surface: '#eef4fa',
 };
+
+// Tail tip x=382 in the 520-wide chat-bubble viewBox
+const LAUNCHER_TAIL_CENTER_PERCENT = (382 / 520) * 100;
 
 const FALLBACK_SUGGESTED_QUESTIONS = [
     'What should I try first?',
@@ -203,43 +207,120 @@ const styles = (theme) => ({
         flexShrink: 0,
         transition: 'transform 0.2s ease',
     },
-    toggleButton: {
+    floatingLauncher: {
         position: 'fixed',
         bottom: 20,
         right: 20,
         zIndex: 1001,
+        maxWidth: 'calc(100vw - 40px)',
+        transform: 'translateX(6px)',
+    },
+    embeddedLauncher: {
+        width: '100%',
+        padding: '24px 16px',
+        boxSizing: 'border-box',
+    },
+    launcherButton: {
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'flex-end',
+        cursor: 'pointer',
         background: 'none',
-        backgroundColor: 'transparent !important',
-        padding: 0,
         border: 'none',
-        boxShadow: 'none !important',
-        borderRadius: 0,
-        width: 'auto',
-        height: 'auto',
-        minWidth: 0,
-        '&:hover': {
-            backgroundColor: 'transparent !important',
-            boxShadow: 'none !important',
-            '& $toggleAvatarImg': {
-                transform: 'scale(1.06)',
-            },
+        padding: 0,
+        fontFamily: '"Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        '&:hover $launcherAvatar': {
+            transform: 'scale(1.06)',
         },
-        '&:focus': {
-            backgroundColor: 'transparent !important',
+    },
+    launcherStack: {
+        width: '100%',
+        maxWidth: 300,
+    },
+    launcherBubbleWrap: {
+        position: 'relative',
+        width: '100%',
+        padding: 1,
+        boxSizing: 'border-box',
+        overflow: 'hidden',
+        transition: 'max-height 0.25s ease, opacity 0.2s ease, margin-bottom 0.2s ease',
+    },
+    launcherBubbleWrapHidden: {
+        maxHeight: 0,
+        opacity: 0,
+        marginBottom: 0,
+        padding: 0,
+        pointerEvents: 'none',
+    },
+    launcherBubbleWrapVisible: {
+        maxHeight: 200,
+        opacity: 1,
+        marginBottom: 0,
+    },
+    launcherBubbleShape: {
+        position: 'absolute',
+        top: 1,
+        left: 1,
+        width: 'calc(100% - 2px)',
+        height: 'calc(100% - 2px)',
+        display: 'block',
+        overflow: 'visible',
+        pointerEvents: 'none',
+        '& path': {
+            fill: 'transparent',
+            stroke: CHAT_THEME.primary,
+            vectorEffect: 'non-scaling-stroke',
         },
+    },
+    launcherBubbleContent: {
+        position: 'relative',
+        padding: '14px 10px 32px',
+        textAlign: 'left',
+        boxSizing: 'border-box',
+    },
+    launcherTitle: {
+        margin: 0,
+        fontWeight: 700,
+        fontSize: 15,
+        lineHeight: 1.2,
+        color: CHAT_THEME.primaryDark,
+    },
+    launcherDescription: {
+        margin: '2px 0 0',
+        fontSize: 12,
+        lineHeight: 1.3,
+        color: '#5c6b7a',
+    },
+    launcherPill: {
+        display: 'inline-block',
+        marginTop: 4,
+        padding: '2px 7px',
+        borderRadius: 9999,
+        border: `1px solid ${CHAT_THEME.pale}`,
+        backgroundColor: '#ffffff',
+        color: CHAT_THEME.primaryDark,
+        fontSize: 11,
+        fontWeight: 600,
+        lineHeight: 1.2,
+    },
+    launcherAvatarRow: {
+        display: 'flex',
+        justifyContent: 'flex-start',
+        paddingLeft: `calc(${LAUNCHER_TAIL_CENTER_PERCENT}% - 40px)`,
+        marginTop: 4,
+    },
+    launcherAvatar: {
+        width: 80,
+        height: 74,
+        display: 'block',
+        filter: 'drop-shadow(0 4px 14px rgba(76, 125, 159, 0.32))',
+        transition: 'transform 0.2s ease',
     },
     avatarIcon: {
         width: 32,
         height: 32,
         display: 'block',
         flexShrink: 0,
-    },
-    toggleAvatarImg: {
-        width: 80,
-        height: 74,
-        display: 'block',
-        filter: 'drop-shadow(0 4px 14px rgba(76, 125, 159, 0.32))',
-        transition: 'transform 0.2s ease',
     },
     resizeHandle: {
         position: 'absolute',
@@ -250,24 +331,6 @@ const styles = (theme) => ({
         cursor: 'nwse-resize',
         zIndex: 10,
     },
-    embeddedClosed: {
-        flex: 1,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-        padding: 24,
-        backgroundColor: CHAT_THEME.surface,
-    },
-    reopenButton: {
-        border: `1px solid ${CHAT_THEME.primary}`,
-        backgroundColor: CHAT_THEME.white,
-        color: CHAT_THEME.primaryDark,
-        borderRadius: 999,
-        padding: '9px 16px',
-        fontSize: 14,
-        fontWeight: 700,
-        cursor: 'pointer',
-    }
 });
 
 class AgentChatbox extends React.Component {
@@ -288,6 +351,8 @@ class AgentChatbox extends React.Component {
             suggestedQuestions: [],
             isLoadingSuggestedQuestions: false,
             suggestionsCacheKey: '',
+            hasChatBeenOpened: false,
+            isLauncherHovered: false,
         };
         this.messagesEndRef = React.createRef();
         this.chatContainerRef = React.createRef();
@@ -443,6 +508,73 @@ class AgentChatbox extends React.Component {
         }
     };
 
+    handleLauncherPointerIn = () => {
+        this.setState({ isLauncherHovered: true });
+    };
+
+    handleLauncherPointerOut = () => {
+        this.setState({ isLauncherHovered: false });
+    };
+
+    handleLauncherKeyDown = (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            this.toggleChat();
+        }
+    };
+
+    renderLauncher = () => {
+        const { classes } = this.props;
+        const mode = this.props.mode || 'floating';
+        const { hasChatBeenOpened, isLauncherHovered } = this.state;
+        const showBubble = !hasChatBeenOpened || isLauncherHovered;
+
+        return (
+            <button
+                type="button"
+                className={`${classes.launcherButton} ${
+                    mode === 'floating' ? classes.floatingLauncher : classes.embeddedLauncher
+                }`}
+                onClick={this.toggleChat}
+                onKeyDown={this.handleLauncherKeyDown}
+                onMouseEnter={this.handleLauncherPointerIn}
+                onMouseLeave={this.handleLauncherPointerOut}
+                onFocus={this.handleLauncherPointerIn}
+                onBlur={this.handleLauncherPointerOut}
+                aria-label="Open AI Tutor"
+            >
+                <div className={classes.launcherStack}>
+                    <div
+                        className={`${classes.launcherBubbleWrap} ${
+                            showBubble
+                                ? classes.launcherBubbleWrapVisible
+                                : classes.launcherBubbleWrapHidden
+                        }`}
+                        aria-hidden={!showBubble}
+                    >
+                        <ChatBubble
+                            className={classes.launcherBubbleShape}
+                            preserveAspectRatio="none"
+                            aria-hidden="true"
+                        />
+                        <div className={classes.launcherBubbleContent}>
+                            <p className={classes.launcherTitle}>AI Tutor</p>
+                            <p className={classes.launcherDescription}>
+                                Ask me any question about this problem or topic.
+                            </p>
+                            <span className={classes.launcherPill}>
+                                Won&apos;t affect your mastery score
+                            </span>
+                        </div>
+                    </div>
+                    <div className={classes.launcherAvatarRow}>
+                        <OskiAvatar className={classes.launcherAvatar} aria-hidden="true" />
+                    </div>
+                </div>
+            </button>
+        );
+    };
+
     toggleChat = () => {
         this.setState(prevState => {
             const opening = !prevState.isVisible;
@@ -462,6 +594,8 @@ class AgentChatbox extends React.Component {
             }
             return {
                 isVisible: opening,
+                hasChatBeenOpened:
+                    prevState.hasChatBeenOpened || opening || prevState.isVisible,
                 messages: needsGreeting ? this.buildGreetingMessages() : prevState.messages,
             };
         });
@@ -938,33 +1072,8 @@ class AgentChatbox extends React.Component {
             </div>
         );
 
-        // Toggle button (always visible)
-        if (mode === 'floating' && !isVisible) {
-            return (
-                <IconButton
-                    className={classes.toggleButton}
-                    onClick={this.toggleChat}
-                    aria-label="Open AI Tutor"
-                    disableRipple
-                    disableFocusRipple
-                >
-                    <OskiAvatar className={classes.toggleAvatarImg} aria-label="Oski" />
-                </IconButton>
-            );
-        }
-
-        if (mode === 'embedded' && !isVisible) {
-            return (
-                <IconButton
-                    className={classes.toggleButton}
-                    onClick={this.toggleChat}
-                    aria-label="Open AI Tutor"
-                    disableRipple
-                    disableFocusRipple
-                >
-                    <OskiAvatar className={classes.toggleAvatarImg} aria-label="Oski" />
-                </IconButton>
-            );
+        if (!isVisible) {
+            return this.renderLauncher();
         }
 
         // Chat window

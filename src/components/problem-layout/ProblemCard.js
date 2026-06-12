@@ -796,11 +796,6 @@ class ProblemCard extends React.Component {
                 portalHints = ReactDOM.createPortal(
                     <div
                         style={{
-                            backgroundColor: "#FFFFFF",
-                            color: "#000000",
-                            borderRadius: 8,
-                            padding: 12,
-                            boxShadow: "0 2px 6px rgba(0, 0, 0, 0.12)",
                             width: "100%",
                             boxSizing: "border-box",
                         }}
