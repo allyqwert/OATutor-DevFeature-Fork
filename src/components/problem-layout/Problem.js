@@ -81,6 +81,7 @@ class Problem extends React.Component {
             : "";
 
         this.state = {
+            metaCollapsed: false,
             stepStates: {},
             firstAttempts: {},
             problemFinished: false,
