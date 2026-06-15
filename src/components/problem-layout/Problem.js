@@ -81,7 +81,7 @@ class Problem extends React.Component {
             : "";
 
         this.state = {
-            metaCollapsed: false,
+            // metaCollapsed: false,
             stepStates: {},
             firstAttempts: {},
             problemFinished: false,
@@ -814,10 +814,10 @@ class Problem extends React.Component {
 
         const drawerOpen = this.props.drawerOpen;
         const layoutGap = drawerOpen ? 3 : 4;
-        const toggleMetaCollapsed = () =>
-            this.setState((prevState) => ({
-                metaCollapsed: !prevState.metaCollapsed,
-            }));
+        // const toggleMetaCollapsed = () =>
+        //     this.setState((prevState) => ({
+        //         metaCollapsed: !prevState.metaCollapsed,
+        //     }));
         const hintStickTop = "calc(50vh - 120px)";
         const hintDisplayStyle = {
             position: "sticky",
@@ -832,7 +832,8 @@ class Problem extends React.Component {
         // Yellow box
         const bubbleContainerStyle = {
             position: "fixed",
-            top: metaCollapsed ? 410 : this.state.bannerHeight + 330,
+            // top: metaCollapsed ? 410 : this.state.bannerHeight + 330,
+            top: this.state.bannerHeight + 330,
             right: 28,
             display: "flex",
             flexDirection: "column",
