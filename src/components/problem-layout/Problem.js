@@ -813,6 +813,10 @@ class Problem extends React.Component {
 
         const drawerOpen = this.props.drawerOpen;
         const layoutGap = drawerOpen ? 3 : 4;
+        const toggleMetaCollapsed = () =>
+            this.setState((prevState) => ({
+                metaCollapsed: !prevState.metaCollapsed,
+            }));
         const hintStickTop = "calc(50vh - 120px)";
         const hintDisplayStyle = {
             position: "sticky",
