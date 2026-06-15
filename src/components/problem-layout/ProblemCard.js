@@ -35,7 +35,7 @@ import {
 import { joinList } from "../../util/formListString";
 import withTranslation from "../../util/withTranslation.js"
 import CryptoJS from "crypto-js";
-import TTSPlayer from "../../util/ttsPlayer.js";
+import TTSPlayer, { splitIntoSegments, splitTextIntoSentences } from "../../util/ttsPlayer.js";
 import TTSButtons from "./TTSButtons.js";
 import { textToReadable } from "../../util/latexToReadable.js";
 
@@ -370,28 +370,6 @@ class ProblemCard extends React.Component {
         });
     };
 
-    reportHintUsage = () => {
-        const { onHintUsageChange } = this.props;
-        if (!onHintUsageChange) return;
-
-        const hintsWithStatus = this.hints.map((hint, index) => ({
-            id: hint.id,
-            title: hint.title,
-            text: hint.text,
-            type: hint.type,
-            viewed: this.state.hintsFinished[index] > 0,
-            // UI shows "Hint {index+1}" for each top-level hint accordion
-            displayIndex: index + 1,
-            // Manual hints are everything except AI-generated and bottom-out hints
-            isManual: hint.type !== "gptHint" && hint.type !== "bottomOut",
-        }));
-
-        onHintUsageChange(this.index, {
-            stepId: this.step.id,
-            hints: hintsWithStatus,
-        });
-    };
-
     unlockHint = (hintNum, hintType) => {
         // Mark question as wrong if hints are used (on the first time)
         const { seed, problemVars, problemID, courseName, answerMade, lesson } =
@@ -413,7 +391,6 @@ class ProblemCard extends React.Component {
                     return { hintsFinished: prevState.hintsFinished };
                 },
                 () => {
-                    this.reportHintUsage();
                     const { firebase } = this.context;
 
                     firebase.log(
@@ -441,18 +418,10 @@ class ProblemCard extends React.Component {
 
     submitHint = (parsed, hint, isCorrect, hintNum) => {
         if (isCorrect) {
-            this.setState(
-                (prevState) => {
-                    prevState.hintsFinished[hintNum] = 1;
-                    return { hintsFinished: prevState.hintsFinished };
-                },
-                () => {
-                    this.reportHintUsage();
-                }
-            );
-        } else {
-            // Even if the scaffold answer is incorrect, we still consider the hint as viewed.
-            this.reportHintUsage();
+            this.setState((prevState) => {
+                prevState.hintsFinished[hintNum] = 1;
+                return { hintsFinished: prevState.hintsFinished };
+            });
         }
         this.context.firebase.hintLog(
             parsed,
@@ -733,9 +702,10 @@ class ProblemCard extends React.Component {
                                         generateHintFromGPT={this.generateHintFromGPT}
                                         isGeneratingHint={this.state.isGeneratingHint}
                                         enableTTS={this.enableTTS}
+                                        problemTitle={this.props.problemTitle}
                                     />
                                 </ErrorBoundary>
-                                {/* <Spacer /> */}
+                                <Spacer />
                             </div>
             );
 
@@ -762,16 +732,7 @@ class ProblemCard extends React.Component {
                     this.props.hintPortalTarget.current
                 );
             } else {
-                inlineHints = (
-                <div style={{
-                    boxShadow: "0 2px 8px rgba(0,0,0,0.12)",
-                    borderRadius: 4,
-                    marginTop: 4,
-                    marginBottom: 12
-                }}>
-                    {hintsContent}
-                </div>
-    );
+                inlineHints = hintsContent;
             }
         }
 
@@ -805,23 +766,30 @@ class ProblemCard extends React.Component {
                             <hr />
                         </h2>
                     )}
-                        {showCardHeader && (
+
                             <div className={"classes.stepBody"}>
-                                {renderText(
-                                    this.step.stepBody,
-                                    problemID,
-                                    chooseVariables(
-                                        Object.assign(
-                                            {},
-                                            problemVars,
-                                            this.step.variabilization
-                                        ),
-                                        seed
-                                    ),
-                                    this.context
-                                )}
+                                {(() => {
+                                    const vars = chooseVariables(Object.assign({}, problemVars, this.step.variabilization), seed);
+                                    const activeSegment = this.props.ttsActiveSegment;
+                                    if (!this.enableTTS || activeSegment == null || activeSegment < 0) {
+                                        return renderText(this.step.stepBody, problemID, vars, this.context);
+                                    }
+                                    // stepTitle segments come before stepBody in the pacedSpeech array
+                                    const titleOffset = splitTextIntoSentences(this.step.stepTitle).length;
+                                    return splitTextIntoSentences(this.step.stepBody).map((sentence, sIdx) => (
+                                        <span
+                                            key={sIdx}
+                                            style={{
+                                                backgroundColor: (sIdx + titleOffset) === activeSegment ? "#FFF3CD" : "transparent",
+                                                borderRadius: 3,
+                                                transition: "background-color 0.2s",
+                                            }}
+                                        >
+                                            {renderText(sentence, problemID, vars, this.context)}
+                                        </span>
+                                    ));
+                                })()}
                             </div>
-                        )}
                             {inlineHints}
 
                             <div className={classes.root}>
@@ -854,12 +822,18 @@ class ProblemCard extends React.Component {
                             </div>
                         </CardContent>
 
+
+
                         <CardActions style = {{padding: "0px"}}>
-                            {this.showHints && !this.props.hintPortalTarget && (
-                                <Grid item xs={4} sm={4} md={1}>
+                            
+
+                            {/* <Grid item xs={4} sm={4} md={1}>
+                                {this.showHints && (
                                     <center>
+
+
                                         <IconButton
-                                            aria-label="hints"
+                                            aria-label="delete"
                                             onClick={this.toggleHints}
                                             title="View available hints"
                                             disabled={
@@ -880,10 +854,13 @@ class ProblemCard extends React.Component {
                                                 alt="hintToggle"
                                             />
                                         </IconButton>
-                                    </center>
-                                </Grid>
-                            )}
 
+
+                                    </center>
+                                )}
+                            </Grid> */}
+
+                        
                             <Grid 
                                 container
                                 spacing = {2}
