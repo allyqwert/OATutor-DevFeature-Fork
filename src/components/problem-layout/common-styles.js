@@ -78,7 +78,8 @@ const styles = theme => ({
     },
 
     paper: {
-        padding: theme.spacing(3, 2),
+        padding: theme.spacing(2, 2),
+        boxShadow: "0 4px 4px rgba(0, 0, 0, 0.08)",
     },
 
     // Problem
@@ -100,6 +101,9 @@ const styles = theme => ({
         fontSize: 22,
         fontWeight: 700,
         marginTop: 0,
+        display: 'flex',
+        alignItems: 'center',
+        gap: 8,
     },
     problemBody: {
         fontSize: 18,

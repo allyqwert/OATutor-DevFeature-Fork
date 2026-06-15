@@ -50,6 +50,29 @@ export class AgentHelper {
     }
 
     /**
+     * Minimal client lifecycle logging. Ships a compact event payload to the
+     * same Lambda URL (handled server-side as a log-only request).
+     */
+    async logEvent(eventType, payload = {}) {
+        if (!this.agentEndpoint) return;
+        if (!this.sessionId) this.initializeSession();
+        try {
+            await fetch(this.agentEndpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    eventType,
+                    sessionId: this.sessionId,
+                    turnId: this.turnId,
+                    ...payload,
+                }),
+            });
+        } catch (_e) {
+            // Logging should never break the UX.
+        }
+    }
+
+    /**
      * Send message to AI Agent and handle streaming response
      * 
      * @param {string} userMessage - Student's question

@@ -44,6 +44,11 @@ const useStyles = makeStyles(theme => ({
   },
   problemCard: {
     position: 'relative',  // allow absolute positioning of id badge
+    // marginBottom: theme.spacing(4),
+    display: 'flex',
+    flexDirection: 'row',
+    // alignItems: 'flex-start',
+    justifyContent: 'center',
     marginBottom: theme.spacing(4),
   },
   noFooterWrapper: {
@@ -53,7 +58,7 @@ const useStyles = makeStyles(theme => ({
     '& div[width="100%"]': {
       display: 'none',
     },
-    paddingRight: theme.spacing(8),
+    // paddingRight: theme.spacing(8),
   },
   loadingBox: {
     textAlign: 'center',
@@ -69,12 +74,16 @@ const useStyles = makeStyles(theme => ({
     flexGrow: 1,
   },
   idBadge: {
-    position: 'absolute',
-    top: theme.spacing(1),
-    right: theme.spacing(1),
-    backgroundColor: 'rgba(255,255,255,0.8)',
+    flexShrink: 0,
     padding: theme.spacing(0.5, 1),
-    borderRadius: theme.shape.borderRadius,
+    marginLeft: theme.spacing(1),
+    position: 'absolute',
+    marginTop: theme.spacing(3),
+    // right: theme.spacing(1),
+    left: 'calc(50% + 460px)',
+    backgroundColor: 'rgba(255,255,255,0.8)',
+    // padding: theme.spacing(0.5, 1),
+    // borderRadius: theme.shape.borderRadius,
   },
 }));
 
@@ -116,12 +125,8 @@ const ViewAllProblems = ({ translate, history }) => {
   // Filter by objectives
   const memoFiltered = useMemo(() => {
     if (!lesson || problemPool.length === 0) return [];
-    return problemPool.filter(problem =>
-      problem.steps.some(step =>
-        (context.skillModel[step.id] || []).some(kc => kc in lesson.learningObjectives)
-      )
-    );
-  }, [lesson, problemPool, context.skillModel]);
+    return problemPool.filter(problem => problem.lessonId === lesson.id);
+  }, [lesson, problemPool]);
 
   useEffect(() => {
     setFilteredProblems(memoFiltered);
@@ -252,18 +257,14 @@ const ViewAllProblems = ({ translate, history }) => {
       </AppBar>
 
 
-      <Container maxWidth="med" className={classes.container}>
+      <Container maxWidth="md" className={classes.container}>
         {visibleProblems.length ? visibleProblems.map(problem => (
           <Box key={problem.id} className={classes.problemCard}>
-            {/* ID badge */}
-            <Box className={classes.idBadge} style ={{marginRight: 20}}>
-              <Typography variant="caption" color="textSecondary">
-                {problem.id}
-              </Typography>
-            </Box>
-            <Box className={classes.noFooterWrapper}>
+              <Box className={classes.noFooterWrapper} style={{ flex: 1, maxWidth: 900, width: 900 }}>
               <ProblemWrapper
                 autoScroll={false}
+                compactHeader={true}
+                hideHintPanel={true}
                 problem={problem}
                 lesson={lesson}
                 seed={seed}
@@ -272,6 +273,13 @@ const ViewAllProblems = ({ translate, history }) => {
                 problemComplete={problemComplete}
               />
             </Box>
+            {/* ID badge */}
+            <Box className={classes.idBadge} style ={{marginRight: 40}}>
+              <Typography variant="caption" color="textSecondary">
+                {problem.id}
+              </Typography>
+            </Box>
+
           </Box>
         )) : (
           <Box className={classes.loadingBox}>
