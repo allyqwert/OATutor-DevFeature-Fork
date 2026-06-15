@@ -15,6 +15,7 @@ import {
 import styles from "./common-styles.js";
 import { NavLink } from "react-router-dom";
 import withTranslation from "../../util/withTranslation.js"
+import raiseHandIcon from "../../assets/raise.svg";
 import avatar from "../../assets/avatar_default_state.svg";
 import TTSPlayer from "../../util/ttsPlayer.js";
 import TTSButtons from "./TTSButtons.js";
@@ -37,6 +38,7 @@ import {Accordion, AccordionSummary, AccordionDetails, Typography} from "@materi
 import ExpandMoreIcon from '@material-ui/icons/ExpandMore';
 import AgentIntegration from './AgentIntegration';
 import StandaloneChatView from './StandaloneChatView';
+import AvatarHelpPanel from './AvatarHelpPanel';
 
 class Problem extends React.Component {
     static defaultProps = {
@@ -90,8 +92,15 @@ class Problem extends React.Component {
             hintToggleTrigger: 0,
             hintToggleIndex: null,
             isHintPortalOpen: false,
+            hasHintBeenOpened: false,
+            isHintHovering: false,
             attemptHistory: {}, // { "Problem Title": { "Question Text": ["attempt1", "attempt2"] } }
             hintUsageByStep: {}, // { [stepIndex]: { stepId, hints: [{ id, title, text, type, viewed }] } }
+            avatarHintsByStep: {},
+            avatarHintStepIndex: null,
+            avatarVisibleHintIndex: null,
+            isAvatarHintVisible: false,
+            avatarHintRequestId: 0,
             standaloneExited: false,
         };
 
@@ -178,6 +187,15 @@ class Problem extends React.Component {
             hintUsageByStep: {
                 ...prevState.hintUsageByStep,
                 [stepIndex]: usage,
+            },
+        }));
+    };
+
+    handleAvatarHintsChange = (stepIndex, payload) => {
+        this.setState((prevState) => ({
+            avatarHintsByStep: {
+                ...prevState.avatarHintsByStep,
+                [stepIndex]: payload,
             },
         }));
     };
@@ -554,16 +572,78 @@ class Problem extends React.Component {
             expandedAccordion: isExpanded ? panel : null,
             hintToggleIndex: null,
             isHintPortalOpen: false,
+            isAvatarHintVisible: false,
         }));
     };
 
+    getAvatarHintTargetStepIndex = () => {
+        const activeStepData = this.getActiveStepData();
+        if (activeStepData && Number.isInteger(activeStepData.stepIndex)) {
+            return activeStepData.stepIndex;
+        }
+        return 0;
+    };
+
+    getNextAvatarHintIndex = (stepIndex) => {
+        const payload = this.state.avatarHintsByStep[stepIndex];
+        const hints = payload?.hints || [];
+        const currentIndex = Number.isInteger(this.state.avatarVisibleHintIndex)
+            ? this.state.avatarVisibleHintIndex
+            : -1;
+        const nextUnviewedIndex = hints.findIndex(
+            (hint, index) => index > currentIndex && !hint.viewed
+        );
+
+        if (nextUnviewedIndex >= 0) {
+            return nextUnviewedIndex;
+        }
+
+        if (currentIndex + 1 < hints.length) {
+            return currentIndex + 1;
+        }
+
+        if (hints.length > 0) {
+            return Math.min(Math.max(currentIndex, 0), hints.length - 1);
+        }
+
+        return null;
+    };
+
     handleHintAvatarClick = (event) => {
-        if (
-            event &&
-            this.state.isHintPortalOpen &&
-            this.hintPortalRef?.current &&
-            this.hintPortalRef.current.contains(event.target)
-        ) {
+        const chatDisplayMode = this.props.lesson?.chat_display_mode || 'Off';
+
+        if (chatDisplayMode !== 'Avatar') {
+            if (
+                event &&
+                this.state.isHintPortalOpen &&
+                this.hintPortalRef?.current &&
+                this.hintPortalRef.current.contains(event.target)
+            ) {
+                return;
+            }
+
+            this.setState((prevState, props) => {
+                const steps = props.problem?.steps || [];
+
+                if (steps.length === 0) {
+                    return null;
+                }
+
+                const hasExpanded = prevState.expandedAccordion !== null;
+                const targetIndex = hasExpanded
+                    ? prevState.expandedAccordion
+                    : this.getAvatarHintTargetStepIndex();
+
+                return {
+                    hintToggleTrigger: prevState.hintToggleTrigger + 1,
+                    hintToggleIndex: targetIndex,
+                    expandedAccordion: hasExpanded
+                        ? prevState.expandedAccordion
+                        : targetIndex,
+                    isHintPortalOpen: false,
+                    hasHintBeenOpened: true,
+                };
+            });
             return;
         }
 
@@ -574,18 +654,76 @@ class Problem extends React.Component {
                 return null;
             }
 
-            const hasExpanded = prevState.expandedAccordion !== null;
-            const targetIndex = hasExpanded ? prevState.expandedAccordion : 0;
+            const targetIndex = this.getAvatarHintTargetStepIndex();
+            const currentHintIndex = prevState.avatarVisibleHintIndex;
+
+            if (Number.isInteger(currentHintIndex) && !prevState.isAvatarHintVisible) {
+                return {
+                    avatarHintStepIndex: prevState.avatarHintStepIndex ?? targetIndex,
+                    isAvatarHintVisible: true,
+                    hintToggleIndex: prevState.avatarHintStepIndex ?? targetIndex,
+                    expandedAccordion: prevState.avatarHintStepIndex ?? targetIndex,
+                };
+            }
+
+            const nextHintIndex = this.getNextAvatarHintIndex(targetIndex);
+
+            if (nextHintIndex == null) {
+                return null;
+            }
 
             return {
-                hintToggleTrigger: prevState.hintToggleTrigger + 1,
+                avatarHintStepIndex: targetIndex,
+                avatarVisibleHintIndex: nextHintIndex,
+                isAvatarHintVisible: true,
+                avatarHintRequestId: prevState.avatarHintRequestId + 1,
                 hintToggleIndex: targetIndex,
-                expandedAccordion: hasExpanded
-                    ? prevState.expandedAccordion
-                    : targetIndex,
-                isHintPortalOpen: false,
+                expandedAccordion: targetIndex,
             };
         });
+    };
+
+    handleAvatarHintPrevious = () => {
+        this.setState((prevState) => {
+            const currentIndex = prevState.avatarVisibleHintIndex;
+            if (!Number.isInteger(currentIndex) || currentIndex <= 0) {
+                return null;
+            }
+
+            return {
+                avatarVisibleHintIndex: currentIndex - 1,
+                isAvatarHintVisible: true,
+            };
+        });
+    };
+
+    handleAvatarHintNext = () => {
+        this.setState((prevState) => {
+            const stepIndex = prevState.avatarHintStepIndex ?? this.getAvatarHintTargetStepIndex();
+            const payload = prevState.avatarHintsByStep[stepIndex];
+            const hints = payload?.hints || [];
+            const currentIndex = Number.isInteger(prevState.avatarVisibleHintIndex)
+                ? prevState.avatarVisibleHintIndex
+                : -1;
+            const nextIndex = currentIndex + 1;
+
+            if (nextIndex < 0 || nextIndex >= hints.length) {
+                return null;
+            }
+
+            return {
+                avatarHintStepIndex: stepIndex,
+                avatarVisibleHintIndex: nextIndex,
+                isAvatarHintVisible: true,
+                avatarHintRequestId: prevState.avatarHintRequestId + 1,
+                hintToggleIndex: stepIndex,
+                expandedAccordion: stepIndex,
+            };
+        });
+    };
+
+    handleAvatarHintHide = () => {
+        this.setState({ isAvatarHintVisible: false });
     };
 
     handleHintAvatarKeyDown = (event) => {
@@ -602,7 +740,16 @@ class Problem extends React.Component {
         this.setState((prevState) => ({
             isHintPortalOpen: isOpen,
             hintToggleIndex: isOpen ? index : null,
+            hasHintBeenOpened: isOpen ? true : prevState.hasHintBeenOpened,
         }));
+    };
+
+    handleHintHoverStart = () => {
+        this.setState({ isHintHovering: true });
+    };
+
+    handleHintHoverEnd = () => {
+        this.setState({ isHintHovering: false });
     };
 
     render() {
@@ -610,12 +757,40 @@ class Problem extends React.Component {
         const { classes, problem, seed, compactHeader, hideHintPanel } = this.props;
         const [oerLink, oerName, licenseLink, licenseName] =
             this.getOerLicense();
-        const { showPopup, isHintPortalOpen, metaCollapsed } = this.state;
+        const { isHintPortalOpen, hasHintBeenOpened, isHintHovering } = this.state;
+        const showHintPromoBubble =
+            !isHintPortalOpen && (!hasHintBeenOpened || isHintHovering);
+        const showHintCardChrome = isHintPortalOpen || showHintPromoBubble;
         if (problem == null) {
             return <div></div>;
         }
 
         const chatDisplayMode = this.props.lesson?.chat_display_mode || 'Off';
+        const avatarHintStepIndex = this.state.avatarHintStepIndex ?? this.getAvatarHintTargetStepIndex();
+        const avatarHintPayload = this.state.avatarHintsByStep[avatarHintStepIndex];
+        const avatarHints = avatarHintPayload?.hints || [];
+        const avatarVisibleHint = this.state.isAvatarHintVisible &&
+            Number.isInteger(this.state.avatarVisibleHintIndex)
+            ? avatarHints[this.state.avatarVisibleHintIndex]
+            : null;
+        const avatarHasHints = avatarHints.length > 0;
+        const avatarHasAnotherHint =
+            avatarHasHints &&
+            (!Number.isInteger(this.state.avatarVisibleHintIndex) ||
+                this.state.avatarVisibleHintIndex < avatarHints.length - 1);
+        const avatarHasPreviousHint =
+            Number.isInteger(this.state.avatarVisibleHintIndex) &&
+            this.state.avatarVisibleHintIndex > 0;
+        const avatarHintButtonLabel = this.state.isAvatarHintVisible
+            ? "Hide hint"
+            : Number.isInteger(this.state.avatarVisibleHintIndex)
+                ? "Show hint"
+                : "Get a hint";
+        const avatarHintRequest = {
+            requestId: this.state.avatarHintRequestId,
+            stepIndex: this.state.avatarHintStepIndex,
+            hintIndex: this.state.avatarVisibleHintIndex,
+        };
         if (chatDisplayMode === 'Full' && !this.state.standaloneExited) {
             return (
                 <StandaloneChatView
@@ -638,21 +813,16 @@ class Problem extends React.Component {
 
         const drawerOpen = this.props.drawerOpen;
         const layoutGap = drawerOpen ? 3 : 4;
-        const toggleMetaCollapsed = () =>
-            this.setState((prevState) => ({
-                metaCollapsed: !prevState.metaCollapsed,
-            }));
-        const hintStickTop = 200;
+        const hintStickTop = "calc(50vh - 120px)";
         const hintDisplayStyle = {
             position: "sticky",
             top: hintStickTop,
             display: "flex",
             flexDirection: "column",
-            alignItems: "stretch",
-            width: "95%",
+            alignItems: "flex-end",
+            width: "100%",
             maxWidth: "100%",
             maxHeight: "70vh",
-            transition: "all 0.4s ease",
         };
         // Yellow box
         const bubbleContainerStyle = {
@@ -662,37 +832,60 @@ class Problem extends React.Component {
             display: "flex",
             flexDirection: "column",
             alignItems: "flex-end",
-            justifyContent: "flex-start",
-            width: drawerOpen ? "22%" : "37%",
+            width: "100%",
         };
 
-        const speechBubbleStyle = {
-            background: "#FFF3CC",
-            color: "#222",
-            padding: "12px 16px",
-            borderRadius: 8,
-            boxShadow: "0 2px 8px rgba(0,0,0,0.1)",
+        const hintThemePrimary = "#4c7d9f";
+        const hintThemePrimaryDark = "#3f7091";
+        const hintThemeSurface = "#eef4fa";
+        const hintThemePale = "#a3c5de";
+
+        const hintCardWrapperStyle = {
             position: "relative",
-            width: isHintPortalOpen ? "100%" : "auto",
-            maxWidth: isHintPortalOpen ? "100%" : 240,
-            // height: isHintPortalOpen ? "70vh" : "auto",
-            maxHeight: "60vh",
-            alignSelf: isHintPortalOpen ? "stretch" : "flex-end",
-            textAlign: "left",
+            width: "100%",
+            maxWidth: isHintPortalOpen ? "100%" : 300,
+            paddingTop: 28,
+            boxSizing: "border-box",
+            transition: "max-width 0.35s cubic-bezier(0.4, 0, 0.2, 1)",
             cursor: "pointer",
-            transition: "all 0.4s cubic-bezier(0.25, 0.1, 0.25, 1)",
-            marginTop: isHintPortalOpen ? "auto" : 0,
+        };
+
+        const hintCardStyle = {
+            background: isHintPortalOpen ? hintThemeSurface : "transparent",
+            color: "#222",
+            border: showHintCardChrome
+                ? `1px solid ${hintThemePrimary}`
+                : "none",
+            padding: isHintPortalOpen
+                ? "8px 10px"
+                : showHintPromoBubble
+                    ? "14px 10px 6px"
+                    : 0,
+            borderRadius: 8,
+            boxShadow: isHintPortalOpen
+                ? "0 4px 16px rgba(76, 125, 159, 0.14)"
+                : "none",
+            position: "relative",
+            width: "100%",
+            maxHeight: "60vh",
+            overflow: "visible",
+            textAlign: "left",
+            transition:
+                "background-color 0.25s ease, box-shadow 0.25s ease, padding 0.25s ease",
             zIndex: 2,
-            overflowY: "hidden",
+            fontFamily: '"Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+            boxSizing: "border-box",
         };
 
         const hintPortalStyle = {
-            display: isHintPortalOpen ? "block" : "none",
-            right: 28,
-            // width: drawerOpen ? "22%" : "37%",
             width: "100%",
-            height: "55vh",
-            zIndex: 3,
+            maxHeight: isHintPortalOpen ? "50vh" : 0,
+            opacity: isHintPortalOpen ? 1 : 0,
+            marginTop: isHintPortalOpen ? 8 : 0,
+            overflowY: isHintPortalOpen ? "auto" : "hidden",
+            overflowX: "hidden",
+            transition:
+                "max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease, margin-top 0.3s ease",
         };
 
         return (
@@ -900,11 +1093,14 @@ class Problem extends React.Component {
                                                     giveDynamicHint={this.giveDynamicHint}
                                                     prompt_template={this.prompt_template}
                                                     showCardHeader={false}
-                                                    hintToggleTrigger={hideHintPanel ? undefined : this.state.hintToggleTrigger}
-                                                    hintToggleIndex={hideHintPanel ? undefined : this.state.hintToggleIndex}
-                                                    hintPortalTarget={hideHintPanel ? undefined : this.hintPortalRef}
-                                                    onHintToggle={hideHintPanel ? undefined : this.handleHintToggleFromStep}
+                                                    hintToggleTrigger={this.state.hintToggleTrigger}
+                                                    hintToggleIndex={this.state.hintToggleIndex}
+                                                    hintPortalTarget={chatDisplayMode === 'Avatar' ? null : this.hintPortalRef}
+                                                    onHintToggle={this.handleHintToggleFromStep}
                                                     onHintUsageChange={this.handleHintUsageChange}
+                                                    avatarHintMode={chatDisplayMode === 'Avatar'}
+                                                    avatarHintRequest={chatDisplayMode === 'Avatar' ? avatarHintRequest : null}
+                                                    onAvatarHintsChange={this.handleAvatarHintsChange}
                                                 />
                                         </Accordion>
                                     </Element>
@@ -988,100 +1184,137 @@ class Problem extends React.Component {
                             )}
                         </div>
                     </Grid>
-                    {!hideHintPanel && (
-                        <Grid
-                            item
-                            xs={12}
-                            md={drawerOpen ? 4 : 5}
-                            style={{
-                            position: "sticky",
-                            top: hintStickTop,
-                            alignSelf: "flex-start",
-                            zIndex: 2,
-                        }}
+
+                    <Grid
+                        item
+                        xs={12}
+                        md={drawerOpen ? 4 : 5}
+                        style={{
+                        position: "sticky",
+                        top: hintStickTop,
+                        alignSelf: "flex-start",
+                        zIndex: 2,
+                    }}
+                    >
+                        {chatDisplayMode === 'Avatar' ? (
+                            <AvatarHelpPanel
+                                problem={problem}
+                                lesson={this.props.lesson}
+                                seed={seed}
+                                problemVars={this.props.problemVars}
+                                stepStates={this.state.stepStates}
+                                bktParams={this.bktParams}
+                                getActiveStepData={this.getActiveStepData}
+                                attemptHistory={this.state.attemptHistory}
+                                user={this.props.user}
+                                lessonMasteryMap={this.props.lessonMasteryMap}
+                                hintUsageByStep={this.state.hintUsageByStep}
+                                avatarHint={avatarVisibleHint}
+                                avatarHintPayload={avatarHintPayload}
+                                avatarHintIndex={this.state.avatarVisibleHintIndex}
+                                avatarHintButtonLabel={avatarHintButtonLabel}
+                                avatarHintButtonDisabled={!this.state.isAvatarHintVisible && !avatarHasHints}
+                                avatarHasPreviousHint={avatarHasPreviousHint}
+                                avatarHasNextHint={avatarHasAnotherHint}
+                                onGetHint={this.handleHintAvatarClick}
+                                onPreviousHint={this.handleAvatarHintPrevious}
+                                onNextHint={this.handleAvatarHintNext}
+                                onHideHint={this.handleAvatarHintHide}
+                            />
+                        ) : (
+                        <div style={hintDisplayStyle}>
+                        <div
+                            style={bubbleContainerStyle}
+                            onMouseEnter={this.handleHintHoverStart}
+                            onMouseLeave={this.handleHintHoverEnd}
                         >
-                            <div style={hintDisplayStyle}>
-                            <button
-                                style={{
-                                    backgroundColor: "#4E7DAA",
-                                    color: "white",
-                                    border: "none",
-                                    borderRadius: "9999px", // fully rounded edges
-                                    padding: "2px 14px",
-                                    fontSize: "12px",
-                                    fontWeight: 500,
-                                    cursor: "pointer",
-                                    alignSelf: "flex-end",
-                                    marginBottom: "56px",
-                                    position: "fixed",
-                                    top: 250
-                                }}
-                                >
-                                OpenAI o1
-                            </button>
-                            <div
-                                style={bubbleContainerStyle}
-                            >
-                            {/* Speech Bubble */}
-                            <div
-                            style={speechBubbleStyle}
-                            {...stagingProp({
-                                "data-selenium-target": "hint-avatar-toggle",
-                            })}
-                            role="button"
-                            tabIndex={0}
-                            aria-expanded={this.state.isHintPortalOpen}
-                            aria-controls="hint-portal-content"
-                            onClick={this.handleHintAvatarClick}
-                            onKeyDown={this.handleHintAvatarKeyDown}
-                            aria-label="Toggle hints"
-                            >
-                            <p style={{ margin: 0, fontWeight: 600 }}>Stuck on the problem?</p>
-                            {!this.state.isHintPortalOpen && (
-                                <p style={{ margin: 0 }}>Give me a tap and I am happy to help!</p>
-                            )}
-                            <div
-                                ref={this.hintPortalRef}
-                                id="hint-portal-content"
-                                role="region"
-                                aria-live="polite"
-                                aria-label="Hints"
-                                aria-hidden={!this.state.isHintPortalOpen}
-                                style={hintPortalStyle}
-                            />
-
-                            {/* Tail at top right, pointing upward */}
-                            <div
-                                style={{
-                                    position: "absolute",
-                                    top: "-8px",
-                                    right: "24px",
-                                    width: 0,
-                                    height: 0,
-                                    borderLeft: "8px solid transparent",
-                                    borderRight: "8px solid transparent",
-                                    borderBottom: "8px solid #FFF3CC"
-                                }}
-                            />
-                            </div>
-
-                            {/* Avatar Icon */}
-                            <img
-                            src={avatar}
-                            alt="Whisper"
+                        {/* Hints card */}
+                        <div
+                        style={hintCardWrapperStyle}
+                        {...stagingProp({
+                            "data-selenium-target": "hint-avatar-toggle",
+                        })}
+                        role="button"
+                        tabIndex={0}
+                        aria-expanded={this.state.isHintPortalOpen}
+                        aria-controls="hint-portal-content"
+                        aria-label="Toggle hints"
+                        onClick={this.handleHintAvatarClick}
+                        onKeyDown={this.handleHintAvatarKeyDown}
+                        onFocus={this.handleHintHoverStart}
+                        onBlur={this.handleHintHoverEnd}
+                        >
+                        {/* Raise-hand badge: full circle is clickable (not just the icon) */}
+                        <div
                             style={{
-                                width: 64,
-                                height: 64,
+                                width: 52,
+                                height: 52,
+                                borderRadius: "50%",
+                                backgroundColor: hintThemeSurface,
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
                                 position: "absolute",
-                                top: "-55px",
-                                right: "-10px",
-                                zIndex: 0,
+                                top: 2,
+                                right: 22,
+                                zIndex: 3,
+                                cursor: "pointer",
                             }}
+                        >
+                            <img
+                                src={raiseHandIcon}
+                                alt=""
+                                aria-hidden="true"
+                                style={{
+                                    width: 34,
+                                    height: 34,
+                                }}
                             />
-                            </div>
                         </div>
-                        </Grid>
+                        <div style={hintCardStyle}>
+                        {(isHintPortalOpen || showHintPromoBubble) && (
+                        <p style={{ margin: 0, fontWeight: 700, fontSize: 15, lineHeight: 1.2, color: hintThemePrimaryDark }}>
+                            Hints
+                        </p>
+                        )}
+                        {showHintPromoBubble && (
+                            <>
+                                <p style={{ margin: "2px 0 0", fontSize: 12, lineHeight: 1.3, color: "#5c6b7a", whiteSpace: "nowrap" }}>
+                                    Pre-written hints to help you with the problem.
+                                </p>
+                                <span
+                                    style={{
+                                        display: "inline-block",
+                                        marginTop: 4,
+                                        padding: "2px 7px",
+                                        borderRadius: 9999,
+                                        border: `1px solid ${hintThemePale}`,
+                                        backgroundColor: "#ffffff",
+                                        color: hintThemePrimaryDark,
+                                        fontSize: 11,
+                                        fontWeight: 600,
+                                        lineHeight: 1.2,
+                                    }}
+                                >
+                                    Affects your mastery score
+                                </span>
+                            </>
+                        )}
+                        <div
+                            ref={this.hintPortalRef}
+                            id="hint-portal-content"
+                            role="region"
+                            aria-live="polite"
+                            aria-label="Hints"
+                            aria-hidden={!this.state.isHintPortalOpen}
+                            style={hintPortalStyle}
+                        />
+                        </div>
+                        </div>
+                        </div>
+                    </div>
                     )}
+                    </Grid>
                 </Grid>
 
                 <footer>

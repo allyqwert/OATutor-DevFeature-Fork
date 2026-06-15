@@ -29,10 +29,11 @@ export class AgentHelper {
      * Build request payload from Problem.js and ProblemCard.js
      */
     buildAgentRequest(userMessage, problemContext, studentState, extracted, chatPrompt, chatDisplayMode) {
+        const safeUserMessage = typeof userMessage === 'string' ? userMessage : '';
         const request = {
             sessionId: this.sessionId,
             turnId: this.turnId,
-            userMessage: userMessage,
+            userMessage: safeUserMessage,
             problemContext: problemContext,
             studentState: studentState,
             extracted: extracted || {},
@@ -42,6 +43,10 @@ export class AgentHelper {
         };
 
         return request;
+    }
+
+    getTurnId() {
+        return this.turnId;
     }
 
     /**
@@ -78,6 +83,7 @@ export class AgentHelper {
      */
     async sendMessage(userMessage, problemContext, studentState, extracted = {}, chatPrompt = 'PROMPTv2.txt', chatDisplayMode = 'Off', callbacks = {}) {
         const {
+            onTurnStarted = () => {},
             onChunkReceived = () => {},
             onSuccessfulCompletion = () => {},
             onError = () => {}
@@ -89,6 +95,9 @@ export class AgentHelper {
                 this.initializeSession();
             }
             this.turnId += 1;
+            if (callbacks.onTurnStarted) {
+                callbacks.onTurnStarted(this.turnId);
+            }
 
             // Validate endpoint
             if (!this.agentEndpoint) {
@@ -158,6 +167,56 @@ export class AgentHelper {
             onError(error);
             throw error;
         }
+    }
+
+    /**
+     * Fetch short suggested questions for the current problem context.
+     * This is intentionally separate from chat turns so it does not mutate
+     * conversation history or advance the visible chat transcript.
+     */
+    async fetchSuggestedQuestions(problemContext, studentState, extracted = {}, chatPrompt = 'PROMPTv2.txt', chatDisplayMode = 'Off') {
+        if (!this.sessionId) {
+            this.initializeSession();
+        }
+
+        if (!this.agentEndpoint) {
+            throw new Error("AI Agent endpoint not configured. Set REACT_APP_AI_AGENT_URL in .env");
+        }
+
+        const response = await fetch(this.agentEndpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                requestType: 'suggestedQuestions',
+                sessionId: this.sessionId,
+                problemContext,
+                studentState,
+                extracted,
+                chatPrompt: chatPrompt || 'PROMPTv2.txt',
+                chatDisplayMode: chatDisplayMode || 'Off',
+            }),
+        });
+
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
+
+        const text = await response.text();
+        const lines = text.split('\n').filter(line => line.trim());
+
+        for (const line of lines) {
+            const data = JSON.parse(line);
+            if (data.type === 'suggestions') {
+                return Array.isArray(data.questions) ? data.questions : [];
+            }
+            if (data.type === 'error') {
+                throw new Error(data.error || 'Unknown suggestions error');
+            }
+        }
+
+        return [];
     }
 
     /**

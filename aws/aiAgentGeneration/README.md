@@ -1,240 +1,231 @@
-# AI Agent Data Flow Guide
+# AI Agent Generation
 
 ## Overview
 This guide explains how each variable in the LLM prompt is accessed and passed through the system.
 
----
+This Lambda powers the OATutor AI Tutor. It receives the current problem, active step, student state, attempts, hint usage, optional figure images, and chat mode metadata from the React app, then streams a response from OpenAI back to the browser.
 
-## Data Flow Chain
 
+The current implementation supports normal chat turns, suggested-question generation, DynamoDB conversation memory, CloudWatch operational logging, and Firebase chat history logging from the React app.
+
+## System Shape
+
+```text
+Problem.js
+  -> AgentIntegration / AvatarHelpPanel / StandaloneChatView
+  -> AgentChatbox
+  -> AgentHelper
+  -> aws/aiAgentGeneration Lambda
+  -> OpenAI Chat Completions
 ```
-Platform.js → ProblemWrapper → Problem.js → AgentIntegration → AgentChatbox → AgentHelper → AWS Lambda → OpenAI
-```
 
----
+Key files:
 
-## Variables Fed to LLM
+| File | Purpose |
+| --- | --- |
+| `index.mjs` | Lambda entrypoint, CORS, request routing, streaming response, CloudWatch logging, DynamoDB session memory |
+| `agent-logic.mjs` | Prompt loading, chat prompt construction, multimodal message construction, suggested-question prompt and parsing |
+| `PROMPTv1.txt` / `PROMPTv2.txt` | Allowed chat prompt templates selected by lesson config |
+| `src/components/problem-layout/AgentHelper.js` | Frontend API client for chat turns and suggested questions |
+| `src/components/problem-layout/AgentChatbox.js` | Shared chat UI used by Window, Avatar, and Full modes |
 
-### 1. **Problem Context**
+## Chat Display Modes
 
-| Variable | Source | Path |
-|----------|--------|------|
-| `problemID` | `problem.id` | Props from Platform.js → Problem.js → AgentChatbox |
-| `problemTitle` | `problem.title` | Props from Platform.js → Problem.js → AgentChatbox |
-| `problemBody` | `problem.body` | Props from Platform.js → Problem.js → AgentChatbox |
-| `courseName` | `lesson.courseName` | Props from Platform.js → Problem.js → AgentChatbox |
-| `seed` | `this.state.seed` | Platform.js state → Problem.js props → AgentChatbox |
-| `currentStep` | `getActiveStepData()` | Problem.js method → AgentChatbox calls it |
-| `totalSteps` | `problem.steps.length` | Props from Platform.js → Problem.js → AgentChatbox |
+The frontend reads `lesson.chat_display_mode` from `coursePlans.json`.
 
-**Key Method:** `AgentChatbox.getProblemContext()`
+| Mode | Behavior |
+| --- | --- |
+| `Off` | AI Tutor is not rendered. Problem and normal hint UI behave without chat. |
+| `Window` | Floating Oski chat window rendered from `Problem.js` through `AgentIntegration`. |
+| `Avatar` | Embedded Window-style chat panel beside the problem. Includes compact Avatar hint UI inside the chat shell and suggested questions below the textbox. |
+| `Full` | Full-screen standalone AI Tutor view via `StandaloneChatView`. The current problem step is shown above the embedded chat. |
 
----
+`AgentChatbox` is shared across modes. `AvatarHelpPanel` uses Avatar-only slots (`afterMessagesContent`, `beforeInputContent`) so compact hint cards and hint buttons do not affect Window mode styling.
 
-### 2. **Current Step (Active Question)**
+## Request Types
 
-| Variable | Source | Path |
-|----------|--------|------|
-| `stepId` | `step.stepId` | Problem.js.getActiveStepData() |
-| `stepTitle` | `step.stepTitle` | Problem.js.getActiveStepData() |
-| `stepBody` | `step.stepBody` | Problem.js.getActiveStepData() |
-| `correctAnswer` | `step.correctAnswer` | Problem.js.getActiveStepData() |
-| `knowledgeComponents` | `step.knowledgeComponents` | Problem.js.getActiveStepData() |
+All requests are `POST` requests to `REACT_APP_AI_AGENT_URL`.
 
-**Key Method:** `Problem.js.getActiveStepData()`
-- Prioritizes `this.state.expandedAccordion` (currently open accordion)
-- Falls back to first incorrect step
-- Then first unanswered step
-- Finally, last step
+### 1. Chat Turn
 
----
+Sent by `AgentHelper.sendMessage()`.
 
-### 3. **Student State**
-
-| Variable | Source | Path |
-|----------|--------|------|
-| `isCorrect` | `this.state.stepStates[stepIndex]` | Problem.js state → AgentChatbox |
-| `hintsUsed` | `hintUsageByStep[stepIndex]` | ProblemCard reports **manual hint** usage → Problem (`state.hintUsageByStep`) → AgentIntegration → `AgentChatbox.getStudentState()` (filters out `gptHint` and `bottomOut` types, so only manual "Hint 1/2/3" are used) |
-
-**Key Method:** `AgentChatbox.getStudentState()`
-
----
-
-### 4. **Attempt History**
-
-| Variable | Source | Path |
-|----------|--------|------|
-| `attemptHistory` | `this.state.attemptHistory` | Problem.js state → AgentChatbox |
-
-**Structure:**
-```javascript
+```json
 {
-  "Problem Title": {
-    "Question Text (Step Title)": ["attempt1", "attempt2", "attempt3"]
-  }
+  "sessionId": "session_...",
+  "turnId": 1,
+  "userMessage": "Can you help me start?",
+  "problemContext": {},
+  "studentState": {},
+  "extracted": {
+    "text": "...",
+    "images": [],
+    "condition": "avatar_help_panel",
+    "lessonId": "..."
+  },
+  "chatPrompt": "PROMPTv2.txt",
+  "chatDisplayMode": "Avatar",
+  "conversationHistory": []
 }
 ```
 
-**Updated By:** `Problem.js.answerMade()`
-- Called when student submits an answer
-- Records: `attemptedAnswer` and `questionText` (step.stepTitle)
+The Lambda:
 
----
+1. Loads existing conversation history from DynamoDB.
+2. Builds the prompt with `buildAgentPrompt()`.
+3. Streams newline-delimited JSON chunks:
 
-### 5. **Lesson Mastery**
+```json
+{"type":"content","content":"Let's","timestamp":...}
+{"type":"content","content":" start...","timestamp":...}
+{"type":"complete","fullResponse":"Let's start...","timestamp":...}
+```
 
-| Variable | Source | Path |
-|----------|--------|------|
-| `lessonMasteryMap` | `Platform.js.getLessonMasteryMap()` | Platform → ProblemWrapper → Problem → AgentIntegration → AgentChatbox |
+4. Stores the user/assistant turn back to DynamoDB for multi-turn session memory.
 
-**Structure:**
-```javascript
+Research chat history (`chat_opened`, `chat_message`, etc.) is logged from the browser to Firebase `chatHistory` / `development_chatHistory` via `Firebase.logChatHistory()`.
+
+### 2. Suggested Questions
+
+Sent by `AgentHelper.fetchSuggestedQuestions()` with:
+
+```json
 {
-  "lesson-id-1": 0.49,  // 49% mastery
-  "lesson-id-2": 0.20,  // 20% mastery
+  "requestType": "suggestedQuestions",
+  "sessionId": "session_...",
+  "problemContext": {},
+  "studentState": {},
+  "extracted": {
+    "condition": "avatar_help_panel",
+    "lessonId": "..."
+  },
+  "chatPrompt": "PROMPTv2.txt",
+  "chatDisplayMode": "Avatar"
 }
 ```
 
-**Processed By:** `AgentChatbox.getCurrentLessonMastery()`
-- Gets mastery for current lesson (e.g., Lesson 1.2)
-- Returns single percentage value
+The Lambda uses `buildSuggestedQuestionsPrompt()` and `generateSuggestedQuestions()` to return exactly three short questions:
 
-**Calculation:** `Platform.js.getLessonMasteryMap()`
-- Averages all KC (Knowledge Component) masteries per lesson
-- Uses `this.context.bktParams[kc].probMastery`
-
----
-
-### 6. **Skill Mastery (for Current Problem)**
-
-| Variable | Source | Path |
-|----------|--------|------|
-| `skillMastery` | `this.bktParams` | Problem.js (from ThemeContext) → AgentChatbox |
-
-**Extracted By:** `AgentChatbox.extractRelevantSkillMastery()`
-- Takes `currentStep.knowledgeComponents` (KC IDs for this problem)
-- Looks up each KC in `bktParams`
-- Returns object: `{kc1: 0.73, kc2: 0.45, ...}`
-
-**Structure:**
-```javascript
+```json
 {
-  "linear_equations": 0.73,          // 73% mastery
-  "consecutive_integers": 0.45,      // 45% mastery
-  "algebraic_expressions": 0.82      // 82% mastery
+  "type": "suggestions",
+  "questions": [
+    "What should I try first?",
+    "How do I use the graph?",
+    "Can you explain this step?"
+  ],
+  "timestamp": ...
 }
 ```
 
----
+Suggestions use `SUGGESTIONS_MODEL` or default to `gpt-4o-mini`. They do not mutate conversation history. The frontend caches suggestions by problem, active step, and correctness so hint show/hide interactions do not repeatedly call the LLM.
 
-### 7. **BKT Parameters (Bayesian Knowledge Tracing)**
+Client lifecycle events such as `chat_opened`, `chat_closed`, and `chat_message` are logged to Firebase from `AgentChatbox`, not to the Lambda.
 
-| Variable | Source | Path |
-|----------|--------|------|
-| `bktParams` | `this.context.bktParams` | ThemeContext → Problem.js → AgentChatbox |
+## Multimodal Input
 
-**Contains:**
+The chat path supports images for OpenAI vision-capable models. `AgentChatbox.extractConceptExplorationInput()` scans the current user message and problem/step text for OATutor figure tokens such as:
+
+```text
+##figure-name.png
+```
+
+`fetchFiguresAsBase64()` loads matching files from:
+
+```text
+PUBLIC_URL/static/images/figures/<CONTENT_SOURCE>/<problemID>/<filename>
+```
+
+The frontend sends them as data URLs in `extracted.images`. `buildAgentPrompt()` then constructs a multimodal final user message:
+
 ```javascript
-{
-  "kc_name": {
-    probMastery: 0.73,    // Current mastery probability
-    probTransit: 0.15,    // Learning rate
-    probSlip: 0.10,       // Slip probability
-    probGuess: 0.25       // Guess probability
-  }
-}
+[
+  { type: "text", text: userMessage },
+  { type: "image_url", image_url: { url: dataUrl, detail: "auto" } }
+]
 ```
 
-**Updated By:** Backend BKT algorithm when student answers questions
+The default chat model is `gpt-4o`, which can handle these image parts.
 
----
+## Prompt Data
 
-## Final Prompt Structure
+`AgentChatbox` builds two major objects.
 
+### `problemContext`
+
+Built by `AgentChatbox.getProblemContext()`:
+
+| Field | Source |
+| --- | --- |
+| `problemID` | `problem.id` |
+| `problemTitle` | `problem.title` |
+| `problemBody` | `problem.body` |
+| `courseName` | `lesson.courseName` |
+| `seed` | `Problem.js` props |
+| `currentStep` | `Problem.js.getActiveStepData()` |
+| `totalSteps` | `problem.steps.length` |
+
+`getActiveStepData()` prioritizes the expanded accordion, then first incorrect step, then first unanswered step, then the last step.
+
+### `studentState`
+
+Built by `AgentChatbox.getStudentState()`:
+
+| Field | Source |
+| --- | --- |
+| `isCorrect` | `Problem.js.state.stepStates[stepIndex]` |
+| `attemptHistory` | `Problem.js.state.attemptHistory` |
+| `currentLessonMastery` | `lessonMasteryMap[lesson.id]`, formatted as a percentage |
+| `skillMastery` | BKT params for the active step's knowledge components |
+| `hintsUsed` | Manual viewed hints reported by `ProblemCard` through `hintUsageByStep` |
+
+`hintsUsed` intentionally filters out AI-generated dynamic hints and bottom-out answer hints for the chat prompt.
+
+## Prompt Templates
+
+`agent-logic.mjs` only allows these prompt files:
+
+| Template | Notes |
+| --- | --- |
+| `PROMPTv1.txt` | Older tutor behavior template |
+| `PROMPTv2.txt` | Default template |
+
+The frontend passes `lesson.chat_prompt` as `chatPrompt`. If the file name is missing or not allowed, `agent-logic.mjs` falls back to `PROMPTv2.txt`.
+
+`PROMPTv1.txt` is the older expert math tutor prompt. `PROMPTv2.txt` is the newer, more interactive tutor prompt informed by:
+
+- https://doi.org/10.1080/10494820.2025.2488984
+- https://doi.org/10.1145/3698205.3729557
+
+The main `PROMPTv2.txt` design changes are:
+
+- **Open inquiry over chatbot-led quizzing:** students can ask their own questions instead of only responding to tutor prompts. This follows the finding that the ITS-style condition, where students mainly answered system questions, performed worse than peer and GPT dialogue conditions.
+- **Reciprocal dialogue:** responses should sustain a back-and-forth exchange with follow-ups such as "Does this clarify your question?" or "What part is still unclear?" rather than ending after a single answer.
+- **Trust through accuracy and transparency:** the tutor should avoid hallucinating, acknowledge uncertainty or limits when needed, and keep responses reliable enough for students to trust the agent.
+- **Agent personification:** the tutor uses the Oski persona and warm greeting style, such as "Hello! I'm Oski, your AI tutor," reflecting findings that personified agent framing can increase engagement compared with impersonal help text.
+
+Template placeholders currently replaced by `buildAgentPrompt()`:
+
+```text
+{courseName}
+{problemTitle}
+{stepTitle}
+{stepBody}
+{correctAnswer}
+{studentAnswer}
+{correctnessStatus}
+{hintsUsed}
+{attemptHistory}
+{currentLessonMastery}
+{skillMastery}
+{userMessage}
 ```
-PROBLEM CONTEXT:
-  - courseName, problemTitle, currentStep, correctAnswer
 
-STUDENT'S CURRENT STATE:
-  - isCorrect (correct/incorrect/not attempted)
-  - hintsUsed (list of hint texts already shown to the student for this step)
+### Example `PROMPTv1.txt` Input
 
-ATTEMPT HISTORY:
-  - All previous attempts per question in this problem
+This is representative of what the LLM sees after `buildAgentPrompt()` fills the `PROMPTv1.txt` template:
 
-CURRENT LESSON MASTERY:
-  - Single percentage for current lesson only
-  - Format: "58%"
-
-RELEVANT SKILL LEVELS:
-  - KCs specific to current problem step
-  - Format: "linear_equations: 73% mastery"
-
-CRITICAL RULES & TEACHING GUIDELINES:
-  - Hardcoded prompting rules for LLM behavior
-```
-
----
-
-## Key Differences
-
-| Feature | Lesson Mastery | Skill Mastery |
-|---------|----------------|---------------|
-| **Scope** | Entire sub-lessons (e.g., all of Lesson 1.1) | Individual KCs for current step |
-| **Granularity** | Coarse (sub-lesson level) | Fine (KC level) |
-| **Purpose** | Context about related lessons | Skill detail for this problem |
-| **Example** | "Lesson 1.1 Order of Operations: 49%" | "linear_equations: 73%" |
-| **Calculation** | Average of all KCs in sub-lesson | Direct from bktParams for step KCs |
-
----
-
-## Testing
-
-### Browser Console:
-```bash
-npm start
-# Open http://localhost:3000
-# F12 → Console → Look for [getLessonGroupMastery] logs
-```
-
-### Backend Prompt:
-```bash
-cd aws/aiAgentGeneration
-node test-clean.mjs
-# See full prompt with LESSON MASTERY section
-```
-
-### AWS CloudWatch:
-```
-1. Deploy updated Lambda
-2. Use AI Tutor in browser
-3. Check CloudWatch Logs for full prompt
-```
-
----
-
-## Summary
-
-**All data flows through props/context:**
-1. `Platform.js` calculates lesson mastery & holds BKT params
-2. `Problem.js` tracks attempt history & current step state
-3. `AgentChatbox` aggregates everything into `problemContext` + `studentState`
-4. `AgentHelper` sends to AWS Lambda
-5. `agent-logic.mjs` loads template from `prompt.txt` and builds final LLM prompt
-6. OpenAI receives complete context
-
-**Result:** LLM has full visibility into student's progress, struggles, and current problem context.
-
-
----
-
-## System Prompt
-
-**Template file:** [`aws/aiAgentGeneration/prompt.txt`](./prompt.txt)
-
-**What the LLM actually sees:**
-
-```
+```text
 You are an expert math tutor helping a student with an OATutor problem.
 
 PROBLEM CONTEXT:
@@ -290,3 +281,109 @@ Student asks: "I don't understand how to set up the equation for this problem"
 
 Provide helpful, step-by-step guidance.
 ```
+
+## Models and Environment Variables
+
+Frontend:
+
+| Variable | Required | Purpose |
+| --- | --- | --- |
+| `REACT_APP_AI_AGENT_URL` | Yes | Lambda Function URL used by `AgentHelper` |
+
+Lambda:
+
+| Variable | Default | Purpose |
+| --- | --- | --- |
+| `OPENAI_API_KEY` | none | Required OpenAI API key |
+| `OPENAI_MODEL` | `gpt-4o` | Streaming chat model; should support vision if images are sent |
+| `SUGGESTIONS_MODEL` | `gpt-4o-mini` | Non-streaming model for suggested questions |
+| `CONVERSATION_TABLE_NAME` | `agent-conversations` | DynamoDB table for session memory |
+| `LOG_FULL_PROMPT` | `false` | If `true`, writes full prompt text to CloudWatch for debugging |
+| `LOG_ERROR_STACK` | `false` | If `true`, includes error stacks in CloudWatch error events |
+
+## Persistence and Logging
+
+### DynamoDB Conversation Memory (keep this)
+
+`loadConversationHistory(sessionId)` reads previous turns from DynamoDB. `updateConversationHistory()` appends the new user and assistant messages after each completed chat turn.
+
+This is **not** research logging. It is runtime session memory so Oski remembers earlier messages in the same chat session. The frontend sends `conversationHistory: []` on every request; the Lambda relies on DynamoDB to rebuild context across turns.
+
+Items are written with a 24-hour TTL so stale sessions auto-expire:
+
+```javascript
+ttl: Math.floor(Date.now() / 1000) + (24 * 60 * 60)
+```
+
+Keep DynamoDB unless you redesign chat to send full history from the browser on every turn.
+
+### Firebase Chat History
+
+The React app writes research/analytics chat events to Firestore via `Firebase.logChatHistory()` in `src/components/Firebase.js`. Local dev uses `development_chatHistory`; production uses `chatHistory`.
+
+### CloudWatch Events
+
+`index.mjs` logs single-line JSON events for CloudWatch Logs Insights:
+
+| Event | When |
+| --- | --- |
+| `turn_started` | Chat prompt built and model call starting |
+| `turn_completed` | Streaming chat response finished |
+| `turn_error` | Chat turn failed |
+| `suggestions_started` | Suggested-question request starting |
+| `suggestions_completed` | Suggested questions returned |
+| `suggestions_error` | Suggested-question request failed |
+
+## Avatar Mode Hints
+
+Avatar mode no longer portals the full accordion `HintSystem` into the chatbox. Instead:
+
+1. `ProblemCard` remains the source of truth for hints, unlock state, Firebase logging, and BKT side effects.
+2. `ProblemCard` reports compact hint metadata to `Problem.js`.
+3. `Problem.js` owns Avatar hint UI state: current step, visible hint index, whether the card is open, and unlock requests.
+4. `AvatarHelpPanel` renders `AvatarHintCard` inside the chat message area and a bottom hint button only when the card is closed.
+
+Button states:
+
+| State | UI |
+| --- | --- |
+| No hint opened yet | Bottom button says `Get a hint` |
+| Hint open | No bottom hint button; card shows `Previous hint`, `Next hint`, and top-right `Hide hint` |
+| Hint hidden/collapsed | Bottom button says `Show hint` and reopens the same hint |
+
+Opening or advancing to a newly reached hint calls the same underlying unlock path as the normal hint system.
+
+## Local Testing
+
+Frontend:
+
+```bash
+npm start
+```
+
+Production compile check:
+
+```bash
+npm run build
+```
+
+Jest currently may fail before tests run if the repo's Jest config does not transform the ESM `react-markdown` package. Use the production build for a broad compile check until that Jest config issue is fixed.
+
+Backend deployment check:
+
+1. Deploy the latest `aws/aiAgentGeneration/index.mjs`, `agent-logic.mjs`, and prompt files.
+2. Confirm Lambda env vars, especially `OPENAI_API_KEY`, `OPENAI_MODEL`, `SUGGESTIONS_MODEL`, and `CONVERSATION_TABLE_NAME`.
+3. Confirm the frontend `.env` has `REACT_APP_AI_AGENT_URL=<Lambda Function URL>`.
+4. Restart the frontend dev server after changing `.env`.
+5. Watch CloudWatch for `turn_started`, `turn_completed`, `suggestions_started`, and `suggestions_completed`.
+
+## Troubleshooting
+
+| Symptom | Likely cause | Check |
+| --- | --- | --- |
+| Frontend says AI endpoint is not configured | Missing `REACT_APP_AI_AGENT_URL` | Put it in frontend `.env` and restart `npm start` |
+| Suggested questions always fall back | Lambda is stale or suggestions request is failing | Confirm deployed Lambda includes `requestType: "suggestedQuestions"` handling and `SUGGESTIONS_MODEL` is valid |
+| OpenAI error says content is null | Stale Lambda or malformed request | Current code coerces non-string `userMessage` to `""`; redeploy latest backend |
+| Images are ignored | No figure tokens found or image fetch failed | Check browser console warnings from `fetchFiguresAsBase64()` |
+| Prompt changes do not appear | Prompt file not deployed or `chatPrompt` not allowed | Only `PROMPTv1.txt` and `PROMPTv2.txt` are accepted |
+| Mode changes do not appear | `coursePlans.json` change not loaded | Rebuild/restart frontend and confirm `lesson.chat_display_mode` |

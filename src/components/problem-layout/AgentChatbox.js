@@ -17,6 +17,8 @@ import {
 } from '@material-ui/icons';
 import { ReactComponent as OskiAvatar } from '../../assets/avatar_default_state.svg';
 import { ReactComponent as SendArrowIcon } from '../../assets/arrow.svg';
+import { ReactComponent as ChatBubble } from '../../assets/chat-bubble.svg';
+import { ThemeContext } from '../../config/config.js';
 
 const CHAT_THEME = {
     primary: '#4c7d9f',
@@ -27,6 +29,15 @@ const CHAT_THEME = {
     white: '#FFFFFF',
     surface: '#eef4fa',
 };
+
+// Tail tip x=382 in the 520-wide chat-bubble viewBox
+const LAUNCHER_TAIL_CENTER_PERCENT = (382 / 520) * 100;
+
+const FALLBACK_SUGGESTED_QUESTIONS = [
+    'What should I try first?',
+    'Can you explain this step in simpler words?',
+    'Why might my answer be wrong?',
+];
 
 const styles = (theme) => ({
     chatContainer: {
@@ -113,6 +124,45 @@ const styles = (theme) => ({
         backgroundColor: 'white',
         borderTop: `1px solid ${CHAT_THEME.pale}`,
     },
+    suggestions: {
+        marginTop: 4,
+        padding: '12px 14px',
+        borderRadius: 14,
+        backgroundColor: 'rgba(255, 255, 255, 0.72)',
+        border: `1px solid ${CHAT_THEME.pale}`,
+    },
+    suggestionsTitle: {
+        color: '#5f6f7f',
+        fontSize: 13,
+        fontWeight: 700,
+        marginBottom: 8,
+    },
+    suggestionList: {
+        display: 'flex',
+        flexWrap: 'wrap',
+        gap: 8,
+    },
+    suggestionChip: {
+        border: `1px solid ${CHAT_THEME.pale}`,
+        backgroundColor: '#f7fbfe',
+        color: CHAT_THEME.primaryDark,
+        borderRadius: 999,
+        padding: '7px 11px',
+        fontSize: 13,
+        fontWeight: 700,
+        lineHeight: 1.25,
+        cursor: 'pointer',
+        textAlign: 'left',
+        transition: 'all 0.16s ease',
+        '&:hover': {
+            borderColor: CHAT_THEME.primary,
+            backgroundColor: CHAT_THEME.surface,
+        },
+        '&:disabled': {
+            cursor: 'default',
+            opacity: 0.65,
+        },
+    },
     inputContainer: {
         display: 'flex',
         gap: 8,
@@ -157,43 +207,120 @@ const styles = (theme) => ({
         flexShrink: 0,
         transition: 'transform 0.2s ease',
     },
-    toggleButton: {
+    floatingLauncher: {
         position: 'fixed',
         bottom: 20,
         right: 20,
         zIndex: 1001,
+        maxWidth: 'calc(100vw - 40px)',
+        transform: 'translateX(6px)',
+    },
+    embeddedLauncher: {
+        width: '100%',
+        padding: '24px 16px',
+        boxSizing: 'border-box',
+    },
+    launcherButton: {
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'flex-end',
+        cursor: 'pointer',
         background: 'none',
-        backgroundColor: 'transparent !important',
-        padding: 0,
         border: 'none',
-        boxShadow: 'none !important',
-        borderRadius: 0,
-        width: 'auto',
-        height: 'auto',
-        minWidth: 0,
-        '&:hover': {
-            backgroundColor: 'transparent !important',
-            boxShadow: 'none !important',
-            '& $toggleAvatarImg': {
-                transform: 'scale(1.06)',
-            },
+        padding: 0,
+        fontFamily: '"Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
+        '&:hover $launcherAvatar': {
+            transform: 'scale(1.06)',
         },
-        '&:focus': {
-            backgroundColor: 'transparent !important',
+    },
+    launcherStack: {
+        width: '100%',
+        maxWidth: 300,
+    },
+    launcherBubbleWrap: {
+        position: 'relative',
+        width: '100%',
+        padding: 1,
+        boxSizing: 'border-box',
+        overflow: 'hidden',
+        transition: 'max-height 0.25s ease, opacity 0.2s ease, margin-bottom 0.2s ease',
+    },
+    launcherBubbleWrapHidden: {
+        maxHeight: 0,
+        opacity: 0,
+        marginBottom: 0,
+        padding: 0,
+        pointerEvents: 'none',
+    },
+    launcherBubbleWrapVisible: {
+        maxHeight: 200,
+        opacity: 1,
+        marginBottom: 0,
+    },
+    launcherBubbleShape: {
+        position: 'absolute',
+        top: 1,
+        left: 1,
+        width: 'calc(100% - 2px)',
+        height: 'calc(100% - 2px)',
+        display: 'block',
+        overflow: 'visible',
+        pointerEvents: 'none',
+        '& path': {
+            fill: 'transparent',
+            stroke: CHAT_THEME.primary,
+            vectorEffect: 'non-scaling-stroke',
         },
+    },
+    launcherBubbleContent: {
+        position: 'relative',
+        padding: '14px 10px 32px',
+        textAlign: 'left',
+        boxSizing: 'border-box',
+    },
+    launcherTitle: {
+        margin: 0,
+        fontWeight: 700,
+        fontSize: 15,
+        lineHeight: 1.2,
+        color: CHAT_THEME.primaryDark,
+    },
+    launcherDescription: {
+        margin: '2px 0 0',
+        fontSize: 12,
+        lineHeight: 1.3,
+        color: '#5c6b7a',
+    },
+    launcherPill: {
+        display: 'inline-block',
+        marginTop: 4,
+        padding: '2px 7px',
+        borderRadius: 9999,
+        border: `1px solid ${CHAT_THEME.pale}`,
+        backgroundColor: '#ffffff',
+        color: CHAT_THEME.primaryDark,
+        fontSize: 11,
+        fontWeight: 600,
+        lineHeight: 1.2,
+    },
+    launcherAvatarRow: {
+        display: 'flex',
+        justifyContent: 'flex-start',
+        paddingLeft: `calc(${LAUNCHER_TAIL_CENTER_PERCENT}% - 40px)`,
+        marginTop: 4,
+    },
+    launcherAvatar: {
+        width: 80,
+        height: 74,
+        display: 'block',
+        filter: 'drop-shadow(0 4px 14px rgba(76, 125, 159, 0.32))',
+        transition: 'transform 0.2s ease',
     },
     avatarIcon: {
         width: 32,
         height: 32,
         display: 'block',
         flexShrink: 0,
-    },
-    toggleAvatarImg: {
-        width: 80,
-        height: 74,
-        display: 'block',
-        filter: 'drop-shadow(0 4px 14px rgba(76, 125, 159, 0.32))',
-        transition: 'transform 0.2s ease',
     },
     resizeHandle: {
         position: 'absolute',
@@ -207,6 +334,8 @@ const styles = (theme) => ({
 });
 
 class AgentChatbox extends React.Component {
+    static contextType = ThemeContext;
+
     constructor(props) {
         super(props);
         this.state = {
@@ -218,7 +347,12 @@ class AgentChatbox extends React.Component {
             agentSessionId: null,
             chatWidth: 400,
             chatHeight: 600,
-            isResizing: false
+            isResizing: false,
+            suggestedQuestions: [],
+            isLoadingSuggestedQuestions: false,
+            suggestionsCacheKey: '',
+            hasChatBeenOpened: false,
+            isLauncherHovered: false,
         };
         this.messagesEndRef = React.createRef();
         this.chatContainerRef = React.createRef();
@@ -230,7 +364,23 @@ class AgentChatbox extends React.Component {
         courseName: this.props.lesson?.courseName,
         lessonId: this.props.lesson?.id,
         condition: this.props.condition,
+        chatPrompt: this.props.lesson?.chat_prompt || 'PROMPTv2.txt',
+        stepId: this.getProblemContext()?.currentStep?.id || null,
     });
+
+    logChatEvent = (eventType, extra = {}) => {
+        const firebase = this.context?.firebase;
+        if (!firebase?.logChatHistory) return;
+
+        firebase.logChatHistory({
+            eventType,
+            sessionId: agentHelper.getSessionId(),
+            turnId: agentHelper.getTurnId(),
+            timestampMs: Date.now(),
+            ...this.getChatTelemetry(),
+            ...extra,
+        });
+    };
 
     componentDidMount() {
         agentHelper.initializeSession();
@@ -240,11 +390,11 @@ class AgentChatbox extends React.Component {
             this.setState((prev) => ({
                 messages: prev.messages.length === 0 ? this.buildGreetingMessages() : prev.messages,
             }));
-            agentHelper.logEvent('chat_opened', {
-                ...this.getChatTelemetry(),
+            this.logChatEvent('chat_opened', {
                 embedded: true,
             });
         }
+        this.fetchSuggestedQuestionsIfNeeded();
     }
 
     componentDidUpdate(prevProps, prevState) {
@@ -258,6 +408,10 @@ class AgentChatbox extends React.Component {
         // Only scroll when a new message is added, not when content is updated
         if (this.state.messages.length > prevState.messages.length) {
             this.scrollToBottom();
+        }
+
+        if (this.props.showSuggestedQuestions) {
+            this.fetchSuggestedQuestionsIfNeeded();
         }
     }
     
@@ -285,7 +439,7 @@ class AgentChatbox extends React.Component {
         const title = this.props.problem?.title;
         const subject = title ? `**${title}**` : 'this problem';
         // Client-side telemetry: greeting was shown (first open / after clear).
-        agentHelper.logEvent('greeting_shown', this.getChatTelemetry());
+        this.logChatEvent('greeting_shown');
         return [{
             id: `greeting-${Date.now()}`,
             role: 'assistant',
@@ -293,6 +447,132 @@ class AgentChatbox extends React.Component {
             timestamp: Date.now(),
             isGenerating: false,
         }];
+    };
+
+    getSuggestionsCacheKey = () => {
+        const problemContext = this.getProblemContext();
+        const studentState = this.getStudentState();
+
+        return [
+            problemContext.problemID || '',
+            problemContext.currentStep?.id || '',
+            studentState.isCorrect === undefined ? 'unknown' : String(studentState.isCorrect),
+        ].join('::');
+    };
+
+    fetchSuggestedQuestionsIfNeeded = async () => {
+        if (!this.props.showSuggestedQuestions || this.state.isLoadingSuggestedQuestions) {
+            return;
+        }
+
+        const cacheKey = this.getSuggestionsCacheKey();
+        if (!cacheKey || cacheKey === this.state.suggestionsCacheKey) {
+            return;
+        }
+
+        this.setState({
+            isLoadingSuggestedQuestions: true,
+            suggestionsCacheKey: cacheKey,
+        });
+
+        try {
+            const problemContext = this.getProblemContext();
+            const studentState = this.getStudentState();
+            const { text } = this.extractConceptExplorationInput('', problemContext);
+            const questions = await agentHelper.fetchSuggestedQuestions(
+                problemContext,
+                studentState,
+                {
+                    text,
+                    images: [],
+                    condition: this.props.condition,
+                    lessonId: this.props.lesson?.id,
+                },
+                this.props.lesson?.chat_prompt || 'PROMPTv2.txt',
+                this.props.lesson?.chat_display_mode ?? 'Off',
+            );
+
+            this.setState({
+                suggestedQuestions: questions.slice(0, 3),
+                isLoadingSuggestedQuestions: false,
+            });
+            this.logChatEvent('suggestions_completed', {
+                questions: questions.slice(0, 3),
+            });
+        } catch (_error) {
+            this.setState({
+                suggestedQuestions: FALLBACK_SUGGESTED_QUESTIONS,
+                isLoadingSuggestedQuestions: false,
+            });
+            this.logChatEvent('suggestions_error');
+        }
+    };
+
+    handleLauncherPointerIn = () => {
+        this.setState({ isLauncherHovered: true });
+    };
+
+    handleLauncherPointerOut = () => {
+        this.setState({ isLauncherHovered: false });
+    };
+
+    handleLauncherKeyDown = (event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            event.preventDefault();
+            this.toggleChat();
+        }
+    };
+
+    renderLauncher = () => {
+        const { classes } = this.props;
+        const mode = this.props.mode || 'floating';
+        const { hasChatBeenOpened, isLauncherHovered } = this.state;
+        const showBubble = !hasChatBeenOpened || isLauncherHovered;
+
+        return (
+            <button
+                type="button"
+                className={`${classes.launcherButton} ${
+                    mode === 'floating' ? classes.floatingLauncher : classes.embeddedLauncher
+                }`}
+                onClick={this.toggleChat}
+                onKeyDown={this.handleLauncherKeyDown}
+                onMouseEnter={this.handleLauncherPointerIn}
+                onMouseLeave={this.handleLauncherPointerOut}
+                onFocus={this.handleLauncherPointerIn}
+                onBlur={this.handleLauncherPointerOut}
+                aria-label="Open AI Tutor"
+            >
+                <div className={classes.launcherStack}>
+                    <div
+                        className={`${classes.launcherBubbleWrap} ${
+                            showBubble
+                                ? classes.launcherBubbleWrapVisible
+                                : classes.launcherBubbleWrapHidden
+                        }`}
+                        aria-hidden={!showBubble}
+                    >
+                        <ChatBubble
+                            className={classes.launcherBubbleShape}
+                            preserveAspectRatio="none"
+                            aria-hidden="true"
+                        />
+                        <div className={classes.launcherBubbleContent}>
+                            <p className={classes.launcherTitle}>AI Tutor</p>
+                            <p className={classes.launcherDescription}>
+                                Ask me any question about this problem or topic.
+                            </p>
+                            <span className={classes.launcherPill}>
+                                Won&apos;t affect your mastery score
+                            </span>
+                        </div>
+                    </div>
+                    <div className={classes.launcherAvatarRow}>
+                        <OskiAvatar className={classes.launcherAvatar} aria-hidden="true" />
+                    </div>
+                </div>
+            </button>
+        );
     };
 
     toggleChat = () => {
@@ -303,19 +583,19 @@ class AgentChatbox extends React.Component {
             // it alone.
             const needsGreeting = opening && prevState.messages.length === 0;
             if (opening) {
-                agentHelper.logEvent('chat_opened', {
-                    ...this.getChatTelemetry(),
+                this.logChatEvent('chat_opened', {
                     hasExistingMessages: prevState.messages.length > 0,
                 });
             } else {
-                agentHelper.logEvent('chat_closed', {
-                    ...this.getChatTelemetry(),
+                this.logChatEvent('chat_closed', {
                     hadMessages: prevState.messages.length > 0,
                     messagesCount: prevState.messages.length,
                 });
             }
             return {
                 isVisible: opening,
+                hasChatBeenOpened:
+                    prevState.hasChatBeenOpened || opening || prevState.isVisible,
                 messages: needsGreeting ? this.buildGreetingMessages() : prevState.messages,
             };
         });
@@ -323,14 +603,16 @@ class AgentChatbox extends React.Component {
 
     clearConversation = () => {
         agentHelper.initializeSession();
-        agentHelper.logEvent('chat_cleared', this.getChatTelemetry());
+        this.logChatEvent('chat_cleared');
         // Reset to a fresh greeting rather than an empty pane so the student
         // is always met with an invitation to ask, including after switching
         // problems (componentDidUpdate calls this on problem change).
         this.setState({
             messages: this.buildGreetingMessages(),
-            agentSessionId: agentHelper.getSessionId()
-        });
+            agentSessionId: agentHelper.getSessionId(),
+            suggestedQuestions: [],
+            suggestionsCacheKey: '',
+        }, this.fetchSuggestedQuestionsIfNeeded);
     };
 
     handleResizeStart = (event) => {
@@ -376,14 +658,18 @@ class AgentChatbox extends React.Component {
         }
     };
 
-    handleSendMessage = async () => {
+    handleSendMessage = async (messageOverride = null) => {
         const { currentMessage } = this.state;
+        const nextMessage = typeof messageOverride === 'string' ? messageOverride : currentMessage;
         
-        if (!currentMessage.trim() || this.state.isGenerating) {
+        if (!nextMessage.trim() || this.state.isGenerating) {
+            if (typeof messageOverride === 'string' && this.state.isGenerating) {
+                this.setState({ currentMessage: messageOverride });
+            }
             return;
         }
 
-        const userMessage = currentMessage.trim();
+        const userMessage = nextMessage.trim();
         const messageId = Date.now(); // Unique ID for tracking the assistant message
         
         // Add user message and assistant placeholder in a single setState
@@ -427,6 +713,7 @@ class AgentChatbox extends React.Component {
         const chatDisplayMode = this.props.lesson?.chat_display_mode ?? 'Off';
 
         const assistantMessageId = `assistant-${messageId}`;
+        const turnStart = Date.now();
 
         // Send to agent
         try {
@@ -438,6 +725,14 @@ class AgentChatbox extends React.Component {
                 chatPrompt,
                 chatDisplayMode,
                 {
+                    onTurnStarted: (turnId) => {
+                        this.logChatEvent('chat_message', {
+                            role: 'user',
+                            turnId,
+                            content: userMessage,
+                            imagesCount: images.length,
+                        });
+                    },
                     onChunkReceived: (partialResponse) => {
                         this.setState(prevState => ({
                             messages: prevState.messages.map(msg =>
@@ -457,6 +752,13 @@ class AgentChatbox extends React.Component {
                             isGenerating: false,
                             isTyping: false
                         }));
+                        this.logChatEvent('chat_message', {
+                            role: 'assistant',
+                            turnId: agentHelper.getTurnId(),
+                            content: fullResponse,
+                            latencyMs: Date.now() - turnStart,
+                            responseCharCount: fullResponse.length,
+                        });
                     },
                     onError: (error) => {
                         this.setState(prevState => ({
@@ -473,14 +775,64 @@ class AgentChatbox extends React.Component {
                             isGenerating: false,
                             isTyping: false
                         }));
+                        this.logChatEvent('turn_error', {
+                            turnId: agentHelper.getTurnId(),
+                            message: error.message,
+                        });
                     }
                 }
-            ,
-            extracted
             );
         } catch (error) {
             // Error already handled in callbacks
         }
+    };
+
+    handleSuggestedQuestionClick = (question) => {
+        const cleanQuestion = (question || '').trim();
+        if (!cleanQuestion) return;
+
+        if (this.props.onSuggestedQuestionClick) {
+            this.props.onSuggestedQuestionClick(cleanQuestion);
+            return;
+        }
+
+        if (this.state.isGenerating) {
+            this.setState({ currentMessage: cleanQuestion });
+            return;
+        }
+
+        this.handleSendMessage(cleanQuestion);
+    };
+
+    renderSuggestedQuestions = (questions, loadingSuggestions) => {
+        const { classes } = this.props;
+
+        if (!this.props.showSuggestedQuestions || (!loadingSuggestions && questions.length === 0)) {
+            return null;
+        }
+
+        return (
+            <div className={classes.suggestions}>
+                <div className={classes.suggestionsTitle}>
+                    {loadingSuggestions ? 'Finding helpful questions...' : 'Suggested questions'}
+                </div>
+                {questions.length > 0 && (
+                    <div className={classes.suggestionList}>
+                        {questions.map((question, index) => (
+                            <button
+                                key={`${question}-${index}`}
+                                type="button"
+                                className={classes.suggestionChip}
+                                onClick={() => this.handleSuggestedQuestionClick(question)}
+                                disabled={loadingSuggestions}
+                            >
+                                {question}
+                            </button>
+                        ))}
+                    </div>
+                )}
+            </div>
+        );
     };
 
     extractConceptExplorationInput(userMessage, problemContext) {
@@ -671,22 +1023,57 @@ class AgentChatbox extends React.Component {
 
     render() {
         const { classes } = this.props;
-        const { isVisible, messages, currentMessage, isGenerating, chatWidth, chatHeight } = this.state;
+        const {
+            isVisible,
+            messages,
+            currentMessage,
+            isGenerating,
+            chatWidth,
+            chatHeight,
+            suggestedQuestions,
+            isLoadingSuggestedQuestions,
+        } = this.state;
         const mode = this.props.mode || 'floating';
+        const questions = this.props.suggestedQuestions || suggestedQuestions;
+        const loadingSuggestions = this.props.isLoadingSuggestedQuestions ?? isLoadingSuggestedQuestions;
+        const showEmbeddedHeader = mode === 'embedded' && this.props.showEmbeddedHeader !== false;
+        const topContent = this.props.topContent || null;
+        const afterMessagesContent = this.props.afterMessagesContent || null;
+        const beforeInputContent = this.props.beforeInputContent || null;
+        const embeddedHeight = this.props.embeddedHeight || '100%';
+        const header = (
+            <div className={classes.chatHeader}>
+                <div className={classes.chatTitle}>
+                    <OskiAvatar className={classes.avatarIcon} aria-label="Oski" />
+                    <Typography variant="subtitle1">Oski • AI Tutor</Typography>
+                </div>
+                <div style={{ display: 'flex', gap: '4px' }}>
+                    {messages.length > 0 && (
+                        <IconButton
+                            size="small"
+                            onClick={this.clearConversation}
+                            title="Clear chat"
+                            style={{ color: 'white' }}
+                        >
+                            <DeleteIcon />
+                        </IconButton>
+                    )}
+                    {(mode !== 'embedded' || isVisible) && (
+                        <IconButton
+                            size="small"
+                            onClick={this.toggleChat}
+                            title="Close chat"
+                            style={{ color: 'white' }}
+                        >
+                            <CloseIcon />
+                        </IconButton>
+                    )}
+                </div>
+            </div>
+        );
 
-        // Toggle button (always visible)
-        if (mode === 'floating' && !isVisible) {
-            return (
-                <IconButton
-                    className={classes.toggleButton}
-                    onClick={this.toggleChat}
-                    aria-label="Open AI Tutor"
-                    disableRipple
-                    disableFocusRipple
-                >
-                    <OskiAvatar className={classes.toggleAvatarImg} aria-label="Oski" />
-                </IconButton>
-            );
+        if (!isVisible) {
+            return this.renderLauncher();
         }
 
         // Chat window
@@ -696,18 +1083,20 @@ class AgentChatbox extends React.Component {
                 className={classes.chatContainer}
                 style={{
                     width: mode === 'embedded' ? '100%' : chatWidth,
-                    height: mode === 'embedded' ? '100%' : chatHeight,
+                    height: mode === 'embedded' ? embeddedHeight : chatHeight,
                     position: mode === 'embedded' ? 'relative' : undefined,
                     bottom: mode === 'embedded' ? 'auto' : undefined,
                     right: mode === 'embedded' ? 'auto' : undefined,
-                    borderRadius: mode === 'embedded' ? 0 : undefined,
-                    boxShadow: mode === 'embedded' ? 'none' : undefined,
+                    borderRadius: mode === 'embedded' ? 12 : undefined,
+                    boxShadow: mode === 'embedded' ? '0 8px 32px rgba(0, 0, 0, 0.12)' : undefined,
                     minWidth: mode === 'embedded' ? 0 : undefined,
                     minHeight: mode === 'embedded' ? 0 : undefined,
                     maxWidth: mode === 'embedded' ? 'none' : undefined,
                     maxHeight: mode === 'embedded' ? 'none' : undefined,
                 }}
             >
+                {showEmbeddedHeader && header}
+                {topContent}
                 {/* Resize handle */}
                 {mode === 'floating' && (
                     <div 
@@ -718,105 +1107,84 @@ class AgentChatbox extends React.Component {
                 )}
 
                 {mode === 'floating' && (
-                    <div className={classes.chatHeader}>
-                        <div className={classes.chatTitle}>
-                            <OskiAvatar className={classes.avatarIcon} aria-label="Oski" />
-                            <Typography variant="subtitle1">Oski • AI Tutor</Typography>
-                        </div>
-                        <div style={{ display: 'flex', gap: '4px' }}>
-                            {messages.length > 0 && (
-                                <IconButton
-                                    size="small"
-                                    onClick={this.clearConversation}
-                                    title="Clear chat"
-                                    style={{ color: 'white' }}
-                                >
-                                    <DeleteIcon />
-                                </IconButton>
-                            )}
-                            <IconButton
-                                size="small"
-                                onClick={this.toggleChat}
-                                title="Close chat"
-                                style={{ color: 'white' }}
-                            >
-                                <CloseIcon />
-                            </IconButton>
-                        </div>
-                    </div>
+                    header
                 )}
 
-                <div className={classes.chatMessages}>
-                    {messages.map((message) => (
-                        <div
-                            key={message.id}
-                            className={`${classes.message} ${message.role === 'user' ? classes.userMessage : classes.assistantMessage}`}
-                        >
-                            {message.role === 'user' ? (
-                                <Paper
-                                    className={`${classes.messageBubble} ${classes.userBubble}`}
-                                    elevation={1}
+                <>
+                        <div className={classes.chatMessages}>
+                            {messages.map((message) => (
+                                <div
+                                    key={message.id}
+                                    className={`${classes.message} ${message.role === 'user' ? classes.userMessage : classes.assistantMessage}`}
                                 >
-                                    {message.content ? (
-                                        <Typography variant="body2" style={{ fontSize: 14, lineHeight: 1.4, fontWeight: 400 }}>
-                                            {message.content}
-                                        </Typography>
+                                    {message.role === 'user' ? (
+                                        <Paper
+                                            className={`${classes.messageBubble} ${classes.userBubble}`}
+                                            elevation={1}
+                                        >
+                                            {message.content ? (
+                                                <Typography variant="body2" style={{ fontSize: 14, lineHeight: 1.4, fontWeight: 400 }}>
+                                                    {message.content}
+                                                </Typography>
+                                            ) : (
+                                                <Typography variant="body2" style={{ fontSize: 14, lineHeight: 1.4, fontWeight: 400 }}>
+                                                    {message.isGenerating ? 'Thinking...' : ''}
+                                                </Typography>
+                                            )}
+                                            {message.isGenerating && (
+                                                <CircularProgress size={16} style={{ marginLeft: 8 }} />
+                                            )}
+                                        </Paper>
                                     ) : (
-                                        <Typography variant="body2" style={{ fontSize: 14, lineHeight: 1.4, fontWeight: 400 }}>
-                                            {message.isGenerating ? 'Thinking...' : ''}
-                                        </Typography>
-                                    )}
-                                    {message.isGenerating && (
-                                        <CircularProgress size={16} style={{ marginLeft: 8 }} />
-                                    )}
-                                </Paper>
-                            ) : (
-                                <div className={classes.assistantContent}>
-                                    {message.content ? (
-                                        <div style={{ fontSize: 15, lineHeight: 1.6, fontWeight: 500, color: '#1f2933' }}>
-                                            <MessageRenderer content={message.content} />
+                                        <div className={classes.assistantContent}>
+                                            {message.content ? (
+                                                <div style={{ fontSize: 15, lineHeight: 1.6, fontWeight: 500, color: '#1f2933' }}>
+                                                    <MessageRenderer content={message.content} />
+                                                </div>
+                                            ) : (
+                                                <Typography variant="body2" style={{ fontSize: 15, lineHeight: 1.6, fontWeight: 500, color: '#1f2933' }}>
+                                                    {message.isGenerating ? 'Thinking...' : ''}
+                                                </Typography>
+                                            )}
+                                            {message.isGenerating && (
+                                                <CircularProgress size={16} style={{ marginLeft: 8 }} />
+                                            )}
                                         </div>
-                                    ) : (
-                                        <Typography variant="body2" style={{ fontSize: 15, lineHeight: 1.6, fontWeight: 500, color: '#1f2933' }}>
-                                            {message.isGenerating ? 'Thinking...' : ''}
-                                        </Typography>
-                                    )}
-                                    {message.isGenerating && (
-                                        <CircularProgress size={16} style={{ marginLeft: 8 }} />
                                     )}
                                 </div>
-                            )}
+                            ))}
+                            {afterMessagesContent}
+                            <div ref={this.messagesEndRef} />
                         </div>
-                    ))}
-                    
-                    <div ref={this.messagesEndRef} />
-                </div>
 
-                <div className={classes.chatInput}>
-                    <div className={classes.inputContainer}>
-                        <TextField
-                            className={classes.messageInput}
-                            variant="outlined"
-                            size="small"
-                            placeholder="Ask me anything..."
-                            value={currentMessage}
-                            onChange={this.handleInputChange}
-                            onKeyPress={this.handleKeyPress}
-                            disabled={isGenerating}
-                            multiline
-                            maxRows={3}
-                        />
-                        <IconButton
-                            className={classes.sendButton}
-                            onClick={this.handleSendMessage}
-                            disabled={!currentMessage.trim() || isGenerating}
-                            disableRipple
-                            disableFocusRipple
-                        >
-                            <SendArrowIcon className={classes.sendIcon} aria-label="Send" />
-                        </IconButton>
-                    </div>
-                </div>
+                        <div className={classes.chatInput}>
+                            {beforeInputContent}
+                            <div className={classes.inputContainer}>
+                                <TextField
+                                    className={classes.messageInput}
+                                    variant="outlined"
+                                    size="small"
+                                    placeholder="Ask me anything..."
+                                    value={currentMessage}
+                                    onChange={this.handleInputChange}
+                                    onKeyPress={this.handleKeyPress}
+                                    disabled={isGenerating}
+                                    multiline
+                                    maxRows={3}
+                                />
+                                <IconButton
+                                    className={classes.sendButton}
+                                    onClick={this.handleSendMessage}
+                                    disabled={!currentMessage.trim() || isGenerating}
+                                    disableRipple
+                                    disableFocusRipple
+                                >
+                                    <SendArrowIcon className={classes.sendIcon} aria-label="Send" />
+                                </IconButton>
+                            </div>
+                            {this.renderSuggestedQuestions(questions, loadingSuggestions)}
+                        </div>
+                </>
             </Card>
         );
     }
