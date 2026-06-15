@@ -606,3 +606,5 @@ mastery. Ties (of equal mastery) in the heuristic selection algorithm are broken
 - **giveHintOnIncorrect:** controls whether an incorrect response should automatically force the user into the hint pathway
 - **keepMCOrder:** controls whether to preserve the order of MCQ choices in the spreadsheet
 - **enableCompletionMode:** controls whether the student finishes the lesson once mastery threshold is reached or once all problems exhausted
+- **enableTTS:** enables text-to-speech functionality and buttons displayed
+- **chat_display_mode:** Toggles chatbot with *Off: (chatbot disabled)* and *Window: (interactive chatbot window)*
