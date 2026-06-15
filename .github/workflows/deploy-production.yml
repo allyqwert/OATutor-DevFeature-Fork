@@ -49,6 +49,17 @@ jobs:
 
       - name: Run CI install
         run: npm ci
+      - name: Create Firebase config from secret
+        run: |
+          cat > src/config/firebaseConfig.js << 'EOF'
+          import { initializeApp } from 'firebase/app';
+          import { getFirestore } from 'firebase/firestore';
+          
+          const firebaseConfig = ${{ secrets.STAGING_FIREBASE_CONFIG }};
+          
+          const app = initializeApp(firebaseConfig);
+          export const db = getFirestore(app);
+          EOF
 
       - name: Run build
         run: npm run build
