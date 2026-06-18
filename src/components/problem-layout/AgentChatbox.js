@@ -527,7 +527,9 @@ class AgentChatbox extends React.Component {
         const { classes } = this.props;
         const mode = this.props.mode || 'floating';
         const { hasChatBeenOpened, isLauncherHovered } = this.state;
-        const showBubble = !hasChatBeenOpened || isLauncherHovered;
+        const hintsOpen = this.props.hintsOpen;
+        // Hide bubble while hints panel is open; restore normal show/hover logic when hints close
+        const showBubble = !hintsOpen && (!hasChatBeenOpened || isLauncherHovered);
 
         return (
             <button

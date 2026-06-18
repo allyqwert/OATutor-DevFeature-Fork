@@ -24,6 +24,7 @@ class AgentIntegration extends React.Component {
             mode,
             condition,
             showSuggestedQuestions,
+            hintsOpen,
         } = this.props;
 
         return (
@@ -42,6 +43,7 @@ class AgentIntegration extends React.Component {
                 mode={mode}
                 condition={condition}
                 showSuggestedQuestions={showSuggestedQuestions}
+                hintsOpen={hintsOpen}
             />
         );
     }

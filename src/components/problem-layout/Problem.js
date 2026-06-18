@@ -849,7 +849,7 @@ class Problem extends React.Component {
         const hintCardWrapperStyle = {
             position: "relative",
             width: "100%",
-            maxWidth: isHintPortalOpen ? "100%" : 300,
+            maxWidth: isHintPortalOpen ? 380 : 300,
             paddingTop: 28,
             boxSizing: "border-box",
             transition: "max-width 0.35s cubic-bezier(0.4, 0, 0.2, 1)",
@@ -859,39 +859,31 @@ class Problem extends React.Component {
         const hintCardStyle = {
             background: isHintPortalOpen ? hintThemeSurface : "transparent",
             color: "#222",
-            border: showHintCardChrome
-                ? `1px solid ${hintThemePrimary}`
-                : "none",
+            border: showHintCardChrome ? `1px solid ${hintThemePrimary}` : "none",
             padding: isHintPortalOpen
                 ? "8px 10px"
                 : showHintPromoBubble
                     ? "14px 10px 6px"
                     : 0,
             borderRadius: 8,
-            boxShadow: isHintPortalOpen
-                ? "0 4px 16px rgba(76, 125, 159, 0.14)"
-                : "none",
+            boxShadow: isHintPortalOpen ? "0 4px 16px rgba(76, 125, 159, 0.14)" : "none",
             position: "relative",
             width: "100%",
-            maxHeight: "60vh",
-            overflow: "visible",
+            // Natural height up to 380px, then scroll
+            maxHeight: isHintPortalOpen ? 380 : "none",
+            overflowY: isHintPortalOpen ? "auto" : "visible",
             textAlign: "left",
-            transition:
-                "background-color 0.25s ease, box-shadow 0.25s ease, padding 0.25s ease",
             zIndex: 2,
             fontFamily: '"Inter", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
             boxSizing: "border-box",
         };
 
-        const hintPortalStyle = {
+        const hintPortalStyle = isHintPortalOpen ? {
             width: "100%",
-            maxHeight: isHintPortalOpen ? "50vh" : 0,
-            opacity: isHintPortalOpen ? 1 : 0,
-            marginTop: isHintPortalOpen ? 8 : 0,
-            overflowY: isHintPortalOpen ? "auto" : "hidden",
-            overflowX: "hidden",
-            transition:
-                "max-height 0.4s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.3s ease, margin-top 0.3s ease",
+            boxSizing: "border-box",
+            marginTop: 8,
+        } : {
+            display: "none",
         };
 
         return (
@@ -1603,6 +1595,7 @@ class Problem extends React.Component {
                         user={this.props.user}
                         lessonMasteryMap={this.props.lessonMasteryMap}
                         hintUsageByStep={this.state.hintUsageByStep}
+                        hintsOpen={this.state.isHintPortalOpen}
                     />
                 )}
             </>
