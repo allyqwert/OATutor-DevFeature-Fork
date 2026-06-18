@@ -313,7 +313,7 @@ class ProblemCard extends React.Component {
             stepBody,
             stepTitle,
         } = this.step;
-        const { seed, problemVars, problemID, courseName, answerMade, lesson } =
+        const { seed, problemVars, problemID, courseName, answerMade, lesson, getMasteryData } =
             this.props;
 
         if (inputVal == '') {
@@ -335,6 +335,27 @@ class ProblemCard extends React.Component {
 
         const isCorrect = !!correctAnswer;
 
+        
+        if (this.showCorrectness) {
+            toastNotifyCorrectness(isCorrect, reason, this.translate);
+        } else {
+            toastNotifyCompletion(this.translate);
+        }
+
+        this.setState({
+            isCorrect,
+            checkMarkOpacity: isCorrect ? "100" : "0",
+        });
+        
+        // Pass attempt info to Problem.js for tracking
+        const questionText = stepBody.trim() || stepTitle.trim();
+        answerMade(this.index, knowledgeComponents, isCorrect, parsed, questionText);
+
+
+        const { masteryScore, kcMastery } = getMasteryData
+            ? getMasteryData(knowledgeComponents)
+            : { masteryScore: null, kcMastery: null };
+    
         this.context.firebase.log(
             parsed,
             problemID,
@@ -351,23 +372,10 @@ class ProblemCard extends React.Component {
             courseName,
             this.giveDynamicHint ? "dynamic" : "regular",
             this.state.dynamicHint,
-            this.state.bioInfo
+            this.state.bioInfo,
+            masteryScore, 
+            kcMastery
         );
-
-        if (this.showCorrectness) {
-            toastNotifyCorrectness(isCorrect, reason, this.translate);
-        } else {
-            toastNotifyCompletion(this.translate);
-        }
-
-        this.setState({
-            isCorrect,
-            checkMarkOpacity: isCorrect ? "100" : "0",
-        });
-        
-        // Pass attempt info to Problem.js for tracking
-        const questionText = stepBody.trim() || stepTitle.trim();
-        answerMade(this.index, knowledgeComponents, isCorrect, parsed, questionText);
     };
 
     editInput = (event) => {
@@ -448,7 +456,7 @@ class ProblemCard extends React.Component {
 
     unlockHint = (hintNum, hintType) => {
         // Mark question as wrong if hints are used (on the first time)
-        const { seed, problemVars, problemID, courseName, answerMade, lesson } =
+        const { seed, problemVars, problemID, courseName, answerMade, lesson, getMasteryData } =
             this.props;
         const { isCorrect, hintsFinished } = this.state;
         const { knowledgeComponents, variabilization } = this.step;
@@ -470,6 +478,10 @@ class ProblemCard extends React.Component {
                     this.reportHintUsage();
                     const { firebase } = this.context;
 
+                    const { masteryScore, kcMastery } = getMasteryData
+                        ? getMasteryData(knowledgeComponents)
+                        : { masteryScore: null, kcMastery: null };
+                        
                     firebase.log(
                         null,
                         problemID,
@@ -486,7 +498,9 @@ class ProblemCard extends React.Component {
                         courseName,
                         this.giveDynamicHint ? "dynamic" : "regular",
                         this.state.dynamicHint,
-                        this.state.bioInfo
+                        this.state.bioInfo,
+                        masteryScore,
+                        kcMastery
                     );
                 }
             );
@@ -508,6 +522,11 @@ class ProblemCard extends React.Component {
             // Even if the scaffold answer is incorrect, we still consider the hint as viewed.
             this.reportHintUsage();
         }
+
+        const { masteryScore, kcMastery } = this.props.getMasteryData
+            ? this.props.getMasteryData(this.step.knowledgeComponents)
+            : { masteryScore: null, kcMastery: null };
+        
         this.context.firebase.hintLog(
             parsed,
             this.props.problemID,
@@ -527,7 +546,9 @@ class ProblemCard extends React.Component {
             this.props.courseName,
             this.giveDynamicHint ? "dynamic" : "regular",
             this.state.dynamicHint,
-            this.state.bioInfo
+            this.state.bioInfo,
+            masteryScore,
+            kcMastery
         );
     };
 
@@ -710,6 +731,11 @@ class ProblemCard extends React.Component {
         // TODO: Update firebase logging to log when
         // 1. The dynamic hint is opened
         // 2. The regenerate button is clicked
+
+        const { masteryScore, kcMastery } = this.props.getMasteryData
+            ? this.props.getMasteryData(this.step.knowledgeComponents)
+            : { masteryScore: null, kcMastery: null };
+
         this.context.firebase.log(
             parsed,
             this.props.problemID,
@@ -730,7 +756,9 @@ class ProblemCard extends React.Component {
             this.props.courseName,
             "dynamic",
             this.state.dynamicHint,
-            this.state.bioInfo
+            this.state.bioInfo,
+            masteryScore,
+            kcMastery,
         );
     };
         

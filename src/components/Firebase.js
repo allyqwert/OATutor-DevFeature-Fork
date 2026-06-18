@@ -284,7 +284,9 @@ class Firebase {
         courseName,
         hintType,
         dynamicHint,
-        bioInfo
+        bioInfo,
+        masteryScore = null,
+        kcMastery = null
     ) {
         if (!DO_LOG_DATA) {
             console.debug("Not using firebase for logging (2)");
@@ -309,6 +311,8 @@ class Firebase {
             variabilization,
             lesson,
             Content: courseName,
+            masteryScore,
+            kcMastery,
             knowledgeComponents: step?.knowledgeComponents,
             hintType,
             dynamicHint,
@@ -330,7 +334,9 @@ class Firebase {
         courseName,
         hintType,
         dynamicHint,
-        bioInfo
+        bioInfo,
+        masteryScore = null,
+        kcMastery = null
     ) {
         if (!DO_LOG_DATA) return;
         console.debug("step", step);
@@ -350,6 +356,8 @@ class Firebase {
             bioInfo: "abcedf",
             variabilization,
             Content: courseName,
+            masteryScore,
+            kcMastery,
             lesson,
             knowledgeComponents: step?.knowledgeComponents,
             hintType,
