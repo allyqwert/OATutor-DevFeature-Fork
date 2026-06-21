@@ -12,6 +12,7 @@ import {
     arrayUnion,
     doc,
     getFirestore,
+    increment,
     serverTimestamp,
     setDoc,
 } from "firebase/firestore";
@@ -25,7 +26,6 @@ import {
 
 const problemSubmissionsOutput = "problemSubmissions";
 const problemStartLogOutput = "problemStartLogs";
-const GPTExperimentOutput = "GPTExperimentOutput";
 const feedbackOutput = "feedbacks";
 const siteLogOutput = "siteLogs";
 const focusStatus = "focusStatus";
@@ -314,7 +314,6 @@ class Firebase {
             dynamicHint,
             bioInfo,
         };
-        // return this.writeData(GPTExperimentOutput, data);
         return this.writeData(problemSubmissionsOutput, data);
     }
 
@@ -333,7 +332,6 @@ class Firebase {
         bioInfo
     ) {
         if (!DO_LOG_DATA) return;
-        console.debug("step", step);
         const data = {
             eventType: "hintScaffoldLog",
             problemID,
@@ -346,8 +344,6 @@ class Firebase {
             hintAnswer: hint?.hintAnswer?.toString(),
             hintIsCorrect: isCorrect,
             hintsFinished,
-            dynamicHint: "abc",
-            bioInfo: "abcedf",
             variabilization,
             Content: courseName,
             lesson,
@@ -356,7 +352,6 @@ class Firebase {
             dynamicHint,
             bioInfo,
         };
-        // return this.writeData(GPTExperimentOutput, data);
         return this.writeData(problemSubmissionsOutput, data);
     }
 
@@ -447,6 +442,57 @@ class Firebase {
         return this.writeData(chatHistoryOutput, data);
     }
 
+    /**
+     * Write or update a chatSessions document.
+     * Called with full initial metadata on session start, then with delta
+     * objects (using Firestore increment()) for counter updates.
+     * Does NOT call addMetaData — caller is responsible for all fields.
+     */
+    async logChatSession(sessionId, data) {
+        if (!DO_LOG_DATA) return;
+        if (!this.db) return;
+        const collection = this.getCollectionName('chatSessions');
+        const docRef = doc(this.db, collection, sessionId);
+        let payload;
+        try {
+            payload = sanitizeForFirestore(data);
+        } catch (err) {
+            console.warn('[Firebase] logChatSession: failed to sanitize payload', err);
+            return;
+        }
+        if (process.env.NODE_ENV === 'development') {
+            console.log(`[chatSessions] upsert "${sessionId}"`, payload);
+        }
+        return setDoc(docRef, payload, { merge: true }).catch((err) => {
+            console.warn('[Firebase] logChatSession write failed', err);
+        });
+    }
+
+    /**
+     * Write one lean chatHistory document for a single user/assistant message.
+     * Only stores session-linking fields + message content; all other metadata
+     * lives in chatSessions and is NOT duplicated here.
+     */
+    async logChatMessage(sessionId, messageData) {
+        if (!DO_LOG_DATA) return;
+        if (!this.db) return;
+        const collection = this.getCollectionName(chatHistoryOutput);
+        const docId = this._getReadableID();
+        let payload;
+        try {
+            payload = sanitizeForFirestore({ sessionId, ...messageData });
+        } catch (err) {
+            console.warn('[Firebase] logChatMessage: failed to sanitize payload', err);
+            return;
+        }
+        if (process.env.NODE_ENV === 'development') {
+            console.log(`[chatHistory] message "${docId}"`, payload?.role);
+        }
+        return setDoc(doc(this.db, collection, docId), payload).catch((err) => {
+            console.warn('[Firebase] logChatMessage write failed', err);
+        });
+    }
+
     submitFeedback(
         problemID,
         feedback,
@@ -485,3 +531,4 @@ class Firebase {
 }
 
 export default Firebase;
+export { increment };

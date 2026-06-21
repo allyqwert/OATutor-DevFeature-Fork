@@ -1,6 +1,7 @@
 import React from 'react';
 import { CONTENT_SOURCE } from '@common/global-config';
 import { agentHelper } from './AgentHelper';
+import { increment } from '../Firebase';
 import MessageRenderer from './MessageRenderer';
 import { withStyles } from '@material-ui/core/styles';
 import {
@@ -12,8 +13,7 @@ import {
     CircularProgress
 } from '@material-ui/core';
 import {
-    Close as CloseIcon,
-    Delete as DeleteIcon
+    Close as CloseIcon
 } from '@material-ui/icons';
 import { ReactComponent as OskiAvatar } from '../../assets/avatar_default_state.svg';
 import { ReactComponent as SendArrowIcon } from '../../assets/arrow.svg';
@@ -338,8 +338,9 @@ class AgentChatbox extends React.Component {
 
     constructor(props) {
         super(props);
+        const startsVisible = props.mode === 'embedded' && props.defaultOpen !== false;
         this.state = {
-            isVisible: props.mode === 'embedded',
+            isVisible: startsVisible,
             messages: [],
             currentMessage: '',
             isTyping: false,
@@ -353,46 +354,30 @@ class AgentChatbox extends React.Component {
             suggestionsCacheKey: '',
             hasChatBeenOpened: false,
             isLauncherHovered: false,
+            firstChatActionRecorded: false, // true once firstActionType has been written
         };
         this.messagesEndRef = React.createRef();
         this.chatContainerRef = React.createRef();
     }
 
-    getChatTelemetry = () => ({
-        chatDisplayMode: this.props.lesson?.chat_display_mode || 'Off',
-        problemId: this.props.problem?.id,
-        courseName: this.props.lesson?.courseName,
-        lessonId: this.props.lesson?.id,
-        condition: this.props.condition,
-        chatPrompt: this.props.lesson?.chat_prompt || 'PROMPTv2.txt',
-        stepId: this.getProblemContext()?.currentStep?.id || null,
-    });
+    getFirebase = () => this.context?.firebase;
 
-    logChatEvent = (eventType, extra = {}) => {
-        const firebase = this.context?.firebase;
-        if (!firebase?.logChatHistory) return;
-
-        firebase.logChatHistory({
-            eventType,
-            sessionId: agentHelper.getSessionId(),
-            turnId: agentHelper.getTurnId(),
-            timestampMs: Date.now(),
-            ...this.getChatTelemetry(),
-            ...extra,
-        });
-    };
+    getSessionId = () => agentHelper.getSessionId();
 
     componentDidMount() {
-        agentHelper.initializeSession();
+        // Use initSessionIfNeeded so Problem.js (which mounts first) wins the session ID.
+        agentHelper.initSessionIfNeeded();
         this.setState({ agentSessionId: agentHelper.getSessionId() });
-        if (this.props.mode === 'embedded') {
+        if (this.props.mode === 'embedded' && this.state.isVisible) {
             // In standalone embedded mode, greet immediately and mark chat as opened.
             this.setState((prev) => ({
                 messages: prev.messages.length === 0 ? this.buildGreetingMessages() : prev.messages,
             }));
-            this.logChatEvent('chat_opened', {
-                embedded: true,
-            });
+            const fb = this.getFirebase();
+            const sid = this.getSessionId();
+            if (fb?.logChatSession && sid) {
+                fb.logChatSession(sid, { chatOpenCount: increment(1), lastActivityAt: Date.now() });
+            }
         }
         this.fetchSuggestedQuestionsIfNeeded();
     }
@@ -438,8 +423,11 @@ class AgentChatbox extends React.Component {
     buildGreetingMessages = () => {
         const title = this.props.problem?.title;
         const subject = title ? `**${title}**` : 'this problem';
-        // Client-side telemetry: greeting was shown (first open / after clear).
-        this.logChatEvent('greeting_shown');
+        const fb = this.getFirebase();
+        const sid = this.getSessionId();
+        if (fb?.logChatSession && sid) {
+            fb.logChatSession(sid, { greetingShown: true, lastActivityAt: Date.now() });
+        }
         return [{
             id: `greeting-${Date.now()}`,
             role: 'assistant',
@@ -462,6 +450,9 @@ class AgentChatbox extends React.Component {
 
     fetchSuggestedQuestionsIfNeeded = async () => {
         if (!this.props.showSuggestedQuestions || this.state.isLoadingSuggestedQuestions) {
+            return;
+        }
+        if (this.props.allowEmbeddedClose && !this.state.isVisible) {
             return;
         }
 
@@ -496,15 +487,11 @@ class AgentChatbox extends React.Component {
                 suggestedQuestions: questions.slice(0, 3),
                 isLoadingSuggestedQuestions: false,
             });
-            this.logChatEvent('suggestions_completed', {
-                questions: questions.slice(0, 3),
-            });
         } catch (_error) {
             this.setState({
                 suggestedQuestions: FALLBACK_SUGGESTED_QUESTIONS,
                 isLoadingSuggestedQuestions: false,
             });
-            this.logChatEvent('suggestions_error');
         }
     };
 
@@ -526,16 +513,18 @@ class AgentChatbox extends React.Component {
     renderLauncher = () => {
         const { classes } = this.props;
         const mode = this.props.mode || 'floating';
+        const launcherPlacement = this.props.closedLauncherPlacement || mode;
         const { hasChatBeenOpened, isLauncherHovered } = this.state;
         const hintsOpen = this.props.hintsOpen;
-        // Hide bubble while hints panel is open; restore normal show/hover logic when hints close
-        const showBubble = !hintsOpen && (!hasChatBeenOpened || isLauncherHovered);
+        const showBubble = this.props.showLauncherBubble !== false &&
+            !hintsOpen &&
+            (!hasChatBeenOpened || isLauncherHovered);
 
         return (
             <button
                 type="button"
                 className={`${classes.launcherButton} ${
-                    mode === 'floating' ? classes.floatingLauncher : classes.embeddedLauncher
+                    launcherPlacement === 'floating' ? classes.floatingLauncher : classes.embeddedLauncher
                 }`}
                 onClick={this.toggleChat}
                 onKeyDown={this.handleLauncherKeyDown}
@@ -578,26 +567,33 @@ class AgentChatbox extends React.Component {
     };
 
     toggleChat = () => {
+        const fb = this.getFirebase();
+        const sid = this.getSessionId();
+
         this.setState(prevState => {
             const opening = !prevState.isVisible;
-            // Seed the greeting the first time the chat is opened for this
-            // session. If the student already has a conversation going, leave
-            // it alone.
             const needsGreeting = opening && prevState.messages.length === 0;
-            if (opening) {
-                this.logChatEvent('chat_opened', {
-                    hasExistingMessages: prevState.messages.length > 0,
-                });
-            } else {
-                this.logChatEvent('chat_closed', {
-                    hadMessages: prevState.messages.length > 0,
-                    messagesCount: prevState.messages.length,
-                });
+
+            if (fb?.logChatSession && sid) {
+                if (opening) {
+                    const delta = { chatOpenCount: increment(1), lastActivityAt: Date.now() };
+                    // Record firstActionType = 'chat' only once per session
+                    if (!prevState.firstChatActionRecorded) {
+                        delta.firstActionType = 'chat';
+                        delta.firstActionTimestampMs = Date.now();
+                    }
+                    fb.logChatSession(sid, delta);
+                } else {
+                    fb.logChatSession(sid, { chatCloseCount: increment(1), lastActivityAt: Date.now() });
+                }
             }
+
             return {
                 isVisible: opening,
                 hasChatBeenOpened:
                     prevState.hasChatBeenOpened || opening || prevState.isVisible,
+                firstChatActionRecorded: prevState.firstChatActionRecorded || opening,
+                isLauncherHovered: opening ? false : prevState.isLauncherHovered,
                 messages: needsGreeting ? this.buildGreetingMessages() : prevState.messages,
             };
         });
@@ -605,15 +601,17 @@ class AgentChatbox extends React.Component {
 
     clearConversation = () => {
         agentHelper.initializeSession();
-        this.logChatEvent('chat_cleared');
-        // Reset to a fresh greeting rather than an empty pane so the student
-        // is always met with an invitation to ask, including after switching
-        // problems (componentDidUpdate calls this on problem change).
+        const fb = this.getFirebase();
+        const sid = this.getSessionId();
+        if (fb?.logChatSession && sid) {
+            fb.logChatSession(sid, { clearedCount: increment(1), lastActivityAt: Date.now() });
+        }
         this.setState({
             messages: this.buildGreetingMessages(),
             agentSessionId: agentHelper.getSessionId(),
             suggestedQuestions: [],
             suggestionsCacheKey: '',
+            firstChatActionRecorded: false,
         }, this.fetchSuggestedQuestionsIfNeeded);
     };
 
@@ -625,12 +623,14 @@ class AgentChatbox extends React.Component {
         const startY = event.clientY;
         const startWidth = this.state.chatWidth;
         const startHeight = this.state.chatHeight;
+        const maxWidth = window.innerWidth * 0.95;
+        const minWidth = Math.min(300, maxWidth);
 
         const handleMouseMove = (e) => {
             const deltaX = startX - e.clientX; // Reverse for left-side resize
             const deltaY = startY - e.clientY; // Reverse for top-side resize
             
-            const newWidth = Math.max(300, Math.min(startWidth + deltaX, window.innerWidth * 0.95));
+            const newWidth = Math.max(minWidth, Math.min(startWidth + deltaX, maxWidth));
             const newHeight = Math.max(400, Math.min(startHeight + deltaY, window.innerHeight * 0.9));
             
             this.setState({
@@ -728,12 +728,20 @@ class AgentChatbox extends React.Component {
                 chatDisplayMode,
                 {
                     onTurnStarted: (turnId) => {
-                        this.logChatEvent('chat_message', {
-                            role: 'user',
-                            turnId,
-                            content: userMessage,
-                            imagesCount: images.length,
-                        });
+                        const fb = this.getFirebase();
+                        const sid = this.getSessionId();
+                        if (fb?.logChatMessage && sid) {
+                            fb.logChatMessage(sid, {
+                                turnId,
+                                role: 'user',
+                                content: userMessage,
+                                imagesCount: images.length,
+                                timestampMs: Date.now(),
+                            });
+                        }
+                        if (fb?.logChatSession && sid) {
+                            fb.logChatSession(sid, { messageCountUser: increment(1), lastActivityAt: Date.now() });
+                        }
                     },
                     onChunkReceived: (partialResponse) => {
                         this.setState(prevState => ({
@@ -754,13 +762,21 @@ class AgentChatbox extends React.Component {
                             isGenerating: false,
                             isTyping: false
                         }));
-                        this.logChatEvent('chat_message', {
-                            role: 'assistant',
-                            turnId: agentHelper.getTurnId(),
-                            content: fullResponse,
-                            latencyMs: Date.now() - turnStart,
-                            responseCharCount: fullResponse.length,
-                        });
+                        const fb = this.getFirebase();
+                        const sid = this.getSessionId();
+                        if (fb?.logChatMessage && sid) {
+                            fb.logChatMessage(sid, {
+                                turnId: agentHelper.getTurnId(),
+                                role: 'assistant',
+                                content: fullResponse,
+                                latencyMs: Date.now() - turnStart,
+                                responseCharCount: fullResponse.length,
+                                timestampMs: Date.now(),
+                            });
+                        }
+                        if (fb?.logChatSession && sid) {
+                            fb.logChatSession(sid, { messageCountAssistant: increment(1), lastActivityAt: Date.now() });
+                        }
                     },
                     onError: (error) => {
                         this.setState(prevState => ({
@@ -777,10 +793,11 @@ class AgentChatbox extends React.Component {
                             isGenerating: false,
                             isTyping: false
                         }));
-                        this.logChatEvent('turn_error', {
-                            turnId: agentHelper.getTurnId(),
-                            message: error.message,
-                        });
+                        const fb = this.getFirebase();
+                        const sid = this.getSessionId();
+                        if (fb?.logChatSession && sid) {
+                            fb.logChatSession(sid, { errorCount: increment(1), lastActivityAt: Date.now() });
+                        }
                     }
                 }
             );
@@ -1036,6 +1053,9 @@ class AgentChatbox extends React.Component {
             isLoadingSuggestedQuestions,
         } = this.state;
         const mode = this.props.mode || 'floating';
+        const allowEmbeddedClose = this.props.allowEmbeddedClose === true;
+        const isChatVisible = (mode === 'embedded' && !allowEmbeddedClose) || isVisible;
+        const isResizablePanel = mode === 'floating' || allowEmbeddedClose;
         const questions = this.props.suggestedQuestions || suggestedQuestions;
         const loadingSuggestions = this.props.isLoadingSuggestedQuestions ?? isLoadingSuggestedQuestions;
         const showEmbeddedHeader = mode === 'embedded' && this.props.showEmbeddedHeader !== false;
@@ -1050,17 +1070,7 @@ class AgentChatbox extends React.Component {
                     <Typography variant="subtitle1">Oski • AI Tutor</Typography>
                 </div>
                 <div style={{ display: 'flex', gap: '4px' }}>
-                    {messages.length > 0 && (
-                        <IconButton
-                            size="small"
-                            onClick={this.clearConversation}
-                            title="Clear chat"
-                            style={{ color: 'white' }}
-                        >
-                            <DeleteIcon />
-                        </IconButton>
-                    )}
-                    {(mode !== 'embedded' || isVisible) && (
+                    {(mode !== 'embedded' || allowEmbeddedClose) && (
                         <IconButton
                             size="small"
                             onClick={this.toggleChat}
@@ -1074,7 +1084,7 @@ class AgentChatbox extends React.Component {
             </div>
         );
 
-        if (!isVisible) {
+        if (!isChatVisible) {
             return this.renderLauncher();
         }
 
@@ -1084,23 +1094,37 @@ class AgentChatbox extends React.Component {
                 ref={this.chatContainerRef}
                 className={classes.chatContainer}
                 style={{
-                    width: mode === 'embedded' ? '100%' : chatWidth,
-                    height: mode === 'embedded' ? embeddedHeight : chatHeight,
-                    position: mode === 'embedded' ? 'relative' : undefined,
-                    bottom: mode === 'embedded' ? 'auto' : undefined,
-                    right: mode === 'embedded' ? 'auto' : undefined,
+                    width: mode === 'embedded'
+                        ? (allowEmbeddedClose ? chatWidth : '100%')
+                        : chatWidth,
+                    height: mode === 'embedded'
+                        ? (allowEmbeddedClose ? chatHeight : embeddedHeight)
+                        : chatHeight,
+                    position: mode === 'embedded'
+                        ? (allowEmbeddedClose ? 'fixed' : 'relative')
+                        : undefined,
+                    bottom: mode === 'embedded'
+                        ? (allowEmbeddedClose ? 20 : 'auto')
+                        : undefined,
+                    right: mode === 'embedded'
+                        ? (allowEmbeddedClose ? 20 : 'auto')
+                        : undefined,
                     borderRadius: mode === 'embedded' ? 12 : undefined,
                     boxShadow: mode === 'embedded' ? '0 8px 32px rgba(0, 0, 0, 0.12)' : undefined,
                     minWidth: mode === 'embedded' ? 0 : undefined,
                     minHeight: mode === 'embedded' ? 0 : undefined,
-                    maxWidth: mode === 'embedded' ? 'none' : undefined,
-                    maxHeight: mode === 'embedded' ? 'none' : undefined,
+                    maxWidth: mode === 'embedded'
+                        ? (allowEmbeddedClose ? '95vw' : 'none')
+                        : undefined,
+                    maxHeight: mode === 'embedded'
+                        ? (allowEmbeddedClose ? '90vh' : 'none')
+                        : undefined,
                 }}
             >
                 {showEmbeddedHeader && header}
                 {topContent}
                 {/* Resize handle */}
-                {mode === 'floating' && (
+                {isResizablePanel && (
                     <div 
                         className={classes.resizeHandle}
                         onMouseDown={this.handleResizeStart}

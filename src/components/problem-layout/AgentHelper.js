@@ -26,6 +26,17 @@ export class AgentHelper {
     }
 
     /**
+     * Initialize a session only if one does not already exist.
+     * Safe to call from multiple components (Problem.js + AgentChatbox.js).
+     */
+    initSessionIfNeeded() {
+        if (!this.sessionId) {
+            return this.initializeSession();
+        }
+        return this.sessionId;
+    }
+
+    /**
      * Build request payload from Problem.js and ProblemCard.js
      */
     buildAgentRequest(userMessage, problemContext, studentState, extracted, chatPrompt, chatDisplayMode) {
@@ -72,9 +83,7 @@ export class AgentHelper {
                 this.initializeSession();
             }
             this.turnId += 1;
-            if (callbacks.onTurnStarted) {
-                callbacks.onTurnStarted(this.turnId);
-            }
+            onTurnStarted(this.turnId);
 
             // Validate endpoint
             if (!this.agentEndpoint) {
