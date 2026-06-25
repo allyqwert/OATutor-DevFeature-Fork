@@ -948,10 +948,15 @@ class Problem extends React.Component {
         const hintThemeAccentHover = "#F5DBA7";
         const hintThemeAccentIcon = "#854F0B";
 
+        const hintCardMaxWidth = isHintPortalOpen 
+            ? (drawerOpen ? 340 : 380)  // Wider when drawer is closed
+            : (drawerOpen ? 300 : 340);
+
         const hintCardWrapperStyle = {
             position: "relative",
             width: "100%",
-            maxWidth: isHintPortalOpen ? 340 : 300,
+            // maxWidth: isHintPortalOpen ? 340 : 300,
+            maxWidth: hintCardMaxWidth,
             paddingTop: 34,
             boxSizing: "border-box",
             transition: "max-width 0.35s cubic-bezier(0.4, 0, 0.2, 1)",
