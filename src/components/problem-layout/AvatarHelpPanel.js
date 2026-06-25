@@ -111,6 +111,10 @@ class AvatarHelpPanel extends React.Component {
                     lessonMasteryMap={lessonMasteryMap}
                     hintUsageByStep={hintUsageByStep}
                     embeddedHeight="min(760px, calc(100vh - 220px))"
+                    allowEmbeddedClose
+                    defaultOpen={false}
+                    closedLauncherPlacement="floating"
+                    showLauncherBubble={false}
                     afterMessagesContent={hintCard}
                     beforeInputContent={hintButton}
                     showSuggestedQuestions

@@ -14,6 +14,8 @@ import {
 } from "../../platform-logic/renderText.js";
 import styles from "./common-styles.js";
 import { NavLink } from "react-router-dom";
+import { agentHelper } from "./AgentHelper";
+import { increment } from "../Firebase";
 import withTranslation from "../../util/withTranslation.js"
 import raiseHandIcon from "../../assets/raise.svg";
 import avatar from "../../assets/avatar_default_state.svg";
@@ -103,6 +105,7 @@ class Problem extends React.Component {
             isAvatarHintVisible: false,
             avatarHintRequestId: 0,
             standaloneExited: false,
+            firstHelpAction: null, // "chat" | "hint" — set once, used to write firstActionType
         };
 
         this.togglePopup = this.togglePopup.bind(this);
@@ -131,6 +134,48 @@ class Problem extends React.Component {
             annotation.ariaLabel = annotation.textContent;
         }
 
+        // Initialize shared agent session (idempotent — AgentChatbox also calls this)
+        const sessionId = agentHelper.initSessionIfNeeded();
+
+        // Write the static session metadata doc once per problem load
+        const firebase = this.context?.firebase;
+        if (firebase?.logChatSession && sessionId) {
+            const { problem } = this.props;
+            const chatDisplayMode = lesson?.chat_display_mode || 'Off';
+            firebase.logChatSession(sessionId, {
+                sessionId,
+                oats_user_id: this.context?.userID || null,
+                lms_user_id: this.context?.user?.user_id || null,
+                course_id: this.context?.user?.course_id || null,
+                course_name: this.context?.user?.course_name || lesson?.courseName || null,
+                course_code: this.context?.user?.course_code || null,
+                semester: firebase.addMetaData({}).semester || null,
+                treatment: this.context?.getTreatment?.() ?? null,
+                siteVersion: firebase.siteVersion || null,
+                siteCommitHash: process.env.REACT_APP_COMMIT_HASH || null,
+                problemId: problem?.id || null,
+                lessonId: lesson?.id || null,
+                chatDisplayMode,
+                condition: chatDisplayMode === 'Window' ? 'window'
+                    : chatDisplayMode === 'Avatar' ? 'avatar'
+                    : chatDisplayMode === 'Full' ? 'full'
+                    : 'off',
+                chatPrompt: lesson?.chat_prompt || 'PROMPTv2.txt',
+                startedAt: Date.now(),
+                lastActivityAt: Date.now(),
+                greetingShown: false,
+                firstActionType: null,
+                firstActionTimestampMs: null,
+                chatOpenCount: 0,
+                chatCloseCount: 0,
+                hintOpenCount: 0,
+                hintCloseCount: 0,
+                messageCountUser: 0,
+                messageCountAssistant: 0,
+                errorCount: 0,
+                clearedCount: 0,
+            });
+        }
         if (this.enableTTS) this._loadTTSAudio(this.props.problem);
     }
 
@@ -768,11 +813,33 @@ class Problem extends React.Component {
     };
 
     handleHintToggleFromStep = (index, isOpen) => {
-        this.setState((prevState) => ({
-            isHintPortalOpen: isOpen,
-            hintToggleIndex: isOpen ? index : null,
-            hasHintBeenOpened: isOpen ? true : prevState.hasHintBeenOpened,
-        }));
+        const firebase = this.context?.firebase;
+        const sessionId = agentHelper.getSessionId();
+
+        this.setState((prevState) => {
+            const isFirst = prevState.firstHelpAction === null;
+            const firstHelpAction = isFirst && isOpen ? 'hint' : prevState.firstHelpAction;
+
+            if (firebase?.logChatSession && sessionId) {
+                const delta = isOpen
+                    ? { hintOpenCount: increment(1), lastActivityAt: Date.now() }
+                    : { hintCloseCount: increment(1), lastActivityAt: Date.now() };
+
+                if (isFirst && isOpen) {
+                    delta.firstActionType = 'hint';
+                    delta.firstActionTimestampMs = Date.now();
+                }
+
+                firebase.logChatSession(sessionId, delta);
+            }
+
+            return {
+                isHintPortalOpen: isOpen,
+                hintToggleIndex: isOpen ? index : null,
+                hasHintBeenOpened: isOpen ? true : prevState.hasHintBeenOpened,
+                firstHelpAction,
+            };
+        });
     };
 
     handleHintHoverStart = () => {
@@ -875,12 +942,16 @@ class Problem extends React.Component {
         const hintThemePrimaryDark = "#3f7091";
         const hintThemeSurface = "#eef4fa";
         const hintThemePale = "#a3c5de";
+        const hintThemeAccent = "#EF9F27";
+        const hintThemeAccentSoft = "#FAEEDA";
+        const hintThemeAccentHover = "#F5DBA7";
+        const hintThemeAccentIcon = "#854F0B";
 
         const hintCardWrapperStyle = {
             position: "relative",
             width: "100%",
             maxWidth: isHintPortalOpen ? 380 : 300,
-            paddingTop: 28,
+            paddingTop: 34,
             boxSizing: "border-box",
             transition: "max-width 0.35s cubic-bezier(0.4, 0, 0.2, 1)",
             cursor: "pointer",
@@ -1273,30 +1344,38 @@ class Problem extends React.Component {
                         onFocus={this.handleHintHoverStart}
                         onBlur={this.handleHintHoverEnd}
                         >
-                        {/* Raise-hand badge: full circle is clickable (not just the icon) */}
+                        {/* Hint badge: full circle is clickable (not just the icon) */}
                         <div
                             style={{
-                                width: 52,
-                                height: 52,
+                                width: 64,
+                                height: 64,
                                 borderRadius: "50%",
-                                backgroundColor: hintThemeSurface,
+                                backgroundColor: isHintHovering || isHintPortalOpen
+                                    ? hintThemeAccentHover
+                                    : hintThemeAccentSoft,
+                                border: `3px solid ${hintThemeAccent}`,
+                                boxShadow: "0 6px 18px rgba(239, 159, 39, 0.24)",
                                 display: "flex",
                                 alignItems: "center",
                                 justifyContent: "center",
                                 position: "absolute",
-                                top: 2,
-                                right: 22,
+                                top: 0,
+                                right: 16,
                                 zIndex: 3,
                                 cursor: "pointer",
+                                transition: "transform 0.16s ease, box-shadow 0.16s ease",
+                                transform: isHintHovering || isHintPortalOpen ? "scale(1.04)" : "scale(1)",
                             }}
                         >
-                            <img
-                                src={raiseHandIcon}
-                                alt=""
+                            <span
                                 aria-hidden="true"
                                 style={{
-                                    width: 34,
-                                    height: 34,
+                                    width: 42,
+                                    height: 42,
+                                    display: "block",
+                                    backgroundColor: hintThemeAccentIcon,
+                                    WebkitMask: `url(${lightbulbIcon}) center / contain no-repeat`,
+                                    mask: `url(${lightbulbIcon}) center / contain no-repeat`,
                                 }}
                             />
                         </div>
@@ -1627,6 +1706,7 @@ class Problem extends React.Component {
                         lessonMasteryMap={this.props.lessonMasteryMap}
                         hintUsageByStep={this.state.hintUsageByStep}
                         hintsOpen={this.state.isHintPortalOpen}
+                        condition="window"
                     />
                 )}
             </>
