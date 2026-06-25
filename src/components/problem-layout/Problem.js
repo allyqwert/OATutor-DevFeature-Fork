@@ -951,7 +951,7 @@ class Problem extends React.Component {
         const hintCardWrapperStyle = {
             position: "relative",
             width: "100%",
-            maxWidth: isHintPortalOpen ? 380 : 300,
+            maxWidth: isHintPortalOpen ? 340 : 300,
             paddingTop: 34,
             boxSizing: "border-box",
             transition: "max-width 0.35s cubic-bezier(0.4, 0, 0.2, 1)",
@@ -973,7 +973,7 @@ class Problem extends React.Component {
             position: "relative",
             width: "100%",
             // Natural height up to 380px, then scroll
-            maxHeight: isHintPortalOpen ? 380 : "none",
+            maxHeight: isHintPortalOpen ? 340 : "none",
             overflowY: isHintPortalOpen ? "auto" : "visible",
             textAlign: "left",
             zIndex: 2,
