@@ -936,6 +936,7 @@ class Problem extends React.Component {
             flexDirection: "column",
             alignItems: "flex-end",
             width: "100%",
+            pointerEvents: "none",
         };
 
         const hintThemePrimary = "#4c7d9f";
@@ -955,6 +956,7 @@ class Problem extends React.Component {
             boxSizing: "border-box",
             transition: "max-width 0.35s cubic-bezier(0.4, 0, 0.2, 1)",
             cursor: "pointer",
+            pointerEvents: "auto", 
         };
 
         const hintCardStyle = {
