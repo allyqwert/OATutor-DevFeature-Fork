@@ -3,6 +3,7 @@ import { withStyles } from "@material-ui/core/styles";
 import Button from "@material-ui/core/Button";
 import Card from "@material-ui/core/Card";
 import CardContent from "@material-ui/core/CardContent";
+import TextField from "@material-ui/core/TextField";
 import ProblemCardWrapper from "./ProblemCardWrapper";
 import Grid from "@material-ui/core/Grid";
 import { animateScroll as scroll, Element, scroller } from "react-scroll";
@@ -16,7 +17,11 @@ import { NavLink } from "react-router-dom";
 import { agentHelper } from "./AgentHelper";
 import { increment } from "../Firebase";
 import withTranslation from "../../util/withTranslation.js"
-import lightbulbIcon from "../../assets/lightbulb.svg";
+import raiseHandIcon from "../../assets/raise.svg";
+import avatar from "../../assets/avatar_default_state.svg";
+import TTSPlayer from "../../util/ttsPlayer.js";
+import TTSButtons from "./TTSButtons.js";
+import { textToReadable } from "../../util/latexToReadable.js";
 
 import {
     CANVAS_WARNING_STORAGE_KEY,
@@ -31,7 +36,7 @@ import Spacer from "../Spacer";
 import { stagingProp } from "../../util/addStagingProperty";
 import { cleanArray } from "../../util/cleanObject";
 
-import {Accordion, AccordionSummary, Typography} from "@material-ui/core";
+import {Accordion, AccordionSummary, AccordionDetails, Typography} from "@material-ui/core";
 import ExpandMoreIcon from '@material-ui/icons/ExpandMore';
 import AgentIntegration from './AgentIntegration';
 import StandaloneChatView from './StandaloneChatView';
@@ -72,18 +77,20 @@ class Problem extends React.Component {
         this.unlockFirstHint = unlockFirstHint != null && unlockFirstHint;
         this.giveStuBottomHint = giveStuBottomHint == null || giveStuBottomHint;
         this.giveDynamicHint = this.props.lesson?.allowDynamicHint;
+        this.enableTTS = this.props.lesson?.allowTTS;
         this.prompt_template = this.props.lesson?.prompt_template
             ? this.props.lesson?.prompt_template
             : "";
 
         this.state = {
+            // metaCollapsed: false,
             stepStates: {},
             firstAttempts: {},
             problemFinished: false,
             showFeedback: false,
             feedback: "",
             feedbackSubmitted: false,
-            showPopup: false, 
+            showPopup: false,
             expandedAccordion: 0,
             hintToggleTrigger: 0,
             hintToggleIndex: null,
@@ -103,12 +110,19 @@ class Problem extends React.Component {
 
         this.togglePopup = this.togglePopup.bind(this);
         this.hintPortalRef = React.createRef();
+        this.stepTTSPlayers = {};
+
+        if (this.enableTTS) {
+            this.ttsPlayer = new TTSPlayer();
+            this.ttsPlayer.onStateChange((playing) => this.setState({ ttsPlaying: playing }));
+        }
+        this.bannerRef = React.createRef();
     }
 
     componentDidMount() {
-        const { lesson, setLanguage } = this.props;
-        setLanguage(lesson.language);
-
+        const h = this.bannerRef.current?.offsetHeight || 0;
+        this.setState({ bannerHeight: h });
+        const { lesson } = this.props;
         document["oats-meta-courseName"] = lesson?.courseName || "";
         document["oats-meta-textbookName"] =
             lesson?.courseName
@@ -162,6 +176,56 @@ class Problem extends React.Component {
                 clearedCount: 0,
             });
         }
+        if (this.enableTTS) this._loadTTSAudio(this.props.problem);
+    }
+
+    componentDidUpdate(prevProps) {
+        if (this.enableTTS && prevProps.problem?.id !== this.props.problem?.id) {
+            this._loadTTSAudio(this.props.problem);
+        }
+    }
+
+    _loadTTSAudio(problem) {
+        if (!problem) return;
+
+        // 停止并重置所有旧的 player
+        if (this.ttsPlayer) {
+            this.ttsPlayer.destroy();
+            this.ttsPlayer = new TTSPlayer();
+            this.ttsPlayer.onStateChange((playing) => this.setState({ ttsPlaying: playing }));
+        }
+        Object.values(this.stepTTSPlayers).forEach(p => p.destroy());
+        this.stepTTSPlayers = {};
+        this.setState({ ttsPlaying: false, ttsPlayingStep: -1 });
+
+        // 加载大题音频
+        this.ttsPlayer.onReady(() => this.forceUpdate());
+        let segments;
+        if (problem.pacedSpeech && Array.isArray(problem.pacedSpeech) && problem.pacedSpeech.length > 0) {
+            segments = problem.pacedSpeech;
+        } else {
+            const raw = textToReadable((problem.title || "") + ". " + (problem.body || ""));
+            if (raw && raw !== ".") segments = [raw];
+        }
+        if (segments) this.ttsPlayer.fetchAudio(segments);
+
+        // 加载每个 step 音频
+        (problem.steps || []).forEach((step, idx) => {
+            let stepSegments = null;
+            if (step.pacedSpeech && Array.isArray(step.pacedSpeech) && step.pacedSpeech.length > 0) {
+                stepSegments = step.pacedSpeech;
+            } else {
+                const raw = textToReadable((step.stepTitle || "") + ". " + (step.stepBody || ""));
+                if (raw && raw !== ".") stepSegments = [raw];
+            }
+            if (stepSegments) {
+                const player = new TTSPlayer();
+                player.onStateChange((playing) => this.setState({ ttsPlayingStep: playing ? idx : -1 }));
+                player.onReady(() => this.forceUpdate());
+                this.stepTTSPlayers[idx] = player;
+                player.fetchAudio(stepSegments);
+            }
+        });
     }
 
     handleHintUsageChange = (stepIndex, usage) => {
@@ -185,6 +249,8 @@ class Problem extends React.Component {
     componentWillUnmount() {
         document["oats-meta-courseName"] = "";
         document["oats-meta-textbookName"] = "";
+        if (this.ttsPlayer) this.ttsPlayer.destroy();
+        Object.values(this.stepTTSPlayers).forEach(p => p.destroy());
     }
 
     updateCanvas = async (mastery, components) => {
@@ -396,9 +462,25 @@ class Problem extends React.Component {
             // console.log("num attempted: ", numAttempted);
             // console.log("num steps: ", numSteps);
             // console.log("step states: ", Object.values(nextStepStates));
-            this.setState({
-                stepStates: nextStepStates,
-            });
+            if (isCorrect && cardIndex + 1 < numSteps) {
+                if (this.props.autoScroll) {
+                    scroller.scrollTo((cardIndex + 1).toString(), {
+                        duration: 350,
+                        smooth: true,
+                        offset: -80,
+                    });
+                }
+                this.setState({
+                    stepStates: nextStepStates,
+                    expandedAccordion: cardIndex + 1,
+                    hintToggleIndex: null,
+                    isHintPortalOpen: false,
+                });
+            } else {
+                this.setState({
+                    stepStates: nextStepStates,
+                });
+            }
             if (numAttempted === numSteps) {
                 this.setState({
                     problemFinished: true,
@@ -420,13 +502,16 @@ class Problem extends React.Component {
                 );
                 if (this.props.autoScroll) {
                     scroller.scrollTo((cardIndex + 1).toString(), {
-                        duration: 500,
+                        duration: 350,
                         smooth: true,
-                        offset: -100,
+                        offset: -80,
                     });
                 }
                 this.setState({
                     stepStates: nextStepStates,
+                    expandedAccordion: cardIndex + 1,
+                    hintToggleIndex: null,
+                    isHintPortalOpen: false,
                 });
             } else {
                 this.setState({
@@ -435,6 +520,36 @@ class Problem extends React.Component {
                 });
             }
         }
+    };
+
+    /**
+     * Computes the current BKT mastery for logging. Reads the live (in-place
+     * mutated) bktParams, so call this AFTER answerMade has applied the update
+     * for the step to capture the post-step mastery.
+     * @param {string[]} kcArray knowledge components for the specific step
+     * @returns {{ masteryScore: number|null, kcMastery: Object }}
+     */
+    getMasteryData = (kcArray = []) => {
+        const { lesson } = this.props;
+        const objectives = Object.keys(lesson?.learningObjectives || {});
+
+        let masteryScore = null;
+        if (objectives.length) {
+            const sum = objectives.reduce(
+                (acc, kc) => acc + (this.bktParams[kc]?.probMastery ?? 0),
+                0
+            );
+            masteryScore = sum / objectives.length;
+        }
+
+        const kcMastery = {};
+        cleanArray(kcArray || []).forEach((kc) => {
+            if (this.bktParams[kc]) {
+                kcMastery[kc] = this.bktParams[kc].probMastery;
+            }
+        });
+
+        return { masteryScore, kcMastery };
     };
 
     clickNextProblem = async () => {
@@ -737,7 +852,7 @@ class Problem extends React.Component {
 
     render() {
         const { translate } = this.props;
-        const { classes, problem, seed } = this.props;
+        const { classes, problem, seed, compactHeader, hideHintPanel } = this.props;
         const [oerLink, oerName, licenseLink, licenseName] =
             this.getOerLicense();
         const { isHintPortalOpen, hasHintBeenOpened, isHintHovering } = this.state;
@@ -796,6 +911,10 @@ class Problem extends React.Component {
 
         const drawerOpen = this.props.drawerOpen;
         const layoutGap = drawerOpen ? 3 : 4;
+        // const toggleMetaCollapsed = () =>
+        //     this.setState((prevState) => ({
+        //         metaCollapsed: !prevState.metaCollapsed,
+        //     }));
         const hintStickTop = "calc(50vh - 120px)";
         const hintDisplayStyle = {
             position: "sticky",
@@ -807,9 +926,12 @@ class Problem extends React.Component {
             maxWidth: "100%",
             maxHeight: "70vh",
         };
-
+        // Yellow box
         const bubbleContainerStyle = {
-            position: "relative",
+            position: "fixed",
+            // top: metaCollapsed ? 410 : this.state.bannerHeight + 330,
+            top: this.state.bannerHeight + 330,
+            right: 28,
             display: "flex",
             flexDirection: "column",
             alignItems: "flex-end",
@@ -876,28 +998,37 @@ class Problem extends React.Component {
                     <Grid
                         item
                         xs={12}
-                        md={drawerOpen ? 8 : 7}
+                        md={hideHintPanel ? 12 : (drawerOpen ? 8 : 7)}
                     >
                         <div className={classes.prompt} role={"banner"}>
                             <Card className={classes.titleCard}>
 
-                                <div 
+                                <div
                                     style = {{
                                         backgroundColor: "#EBF4FA",
                                         padding: 20
                                     }}
                                 >
                                     <div className={classes.problemHeader}>
-                                        {renderText(
-                                            problem.title,
-                                            problem.id,
-                                            chooseVariables(
-                                                problem.variabilization,
-                                                seed
-                                            ),
-                                            this.context
+                                        <span style={{ minWidth: 0 }}>
+                                            {renderText(
+                                                problem.title,
+                                                problem.id,
+                                                chooseVariables(
+                                                    problem.variabilization,
+                                                    seed
+                                                ),
+                                                this.context
+                                            )}
+                                        </span>
+                                        {this.enableTTS && this.ttsPlayer && (
+                                            <TTSButtons
+                                                playing={this.state.ttsPlaying}
+                                                onToggle={() => this.ttsPlayer.togglePlayPause()}
+                                                onReplay={() => this.ttsPlayer.replay()}
+                                                disabled={!this.ttsPlayer.isReady()}
+                                            />
                                         )}
-                                        
                                     </div>
                                 </div>
 
@@ -905,7 +1036,7 @@ class Problem extends React.Component {
                                     {...stagingProp({
                                         "data-selenium-target": "problem-header",
                                     })}
-                                    style={{ 
+                                    style={{
                                         padding: 20
                                     }}
                                 >
@@ -924,7 +1055,57 @@ class Problem extends React.Component {
                                 </CardContent>
                             </Card>
                             <Spacer height={8} />
-                            
+                        </div>
+                    <div width="100%">
+                        {this.context.debug ? (
+                            <Grid container spacing={0}>
+                                <Grid item xs={2} key={0} />
+                                <Grid item xs={2} key={1}>
+                                    <NavLink
+                                        activeClassName="active"
+                                        className="link"
+                                        to={this._getNextDebug(-1)}
+                                        type="menu"
+                                        style={{ marginRight: "10px" }}
+                                    >
+                                        <Button
+                                            className={classes.button}
+                                            style={{ width: "100%" }}
+                                            size="small"
+                                            onClick={() =>
+                                                (this.context.needRefresh = true)
+                                            }
+                                        >
+                                            {translate('problem.PreviousProblem')}
+                                        </Button>
+                                    </NavLink>
+                                </Grid>
+                                <Grid item xs={4} key={2} />
+                                <Grid item xs={2} key={3}>
+                                    <NavLink
+                                        activeClassName="active"
+                                        className="link"
+                                        to={this._getNextDebug(1)}
+                                        type="menu"
+                                        style={{ marginRight: "10px" }}
+                                    >
+                                        <Button
+                                            className={classes.button}
+                                            style={{ width: "100%" }}
+                                            size="small"
+                                            onClick={() =>
+                                                (this.context.needRefresh = true)
+                                            }
+                                        >
+                                           {translate('problem.NextProblem')}
+                                        </Button>
+                                    </NavLink>
+                                </Grid>
+                                <Grid item xs={2} key={4} />
+                            </Grid>
+                        ) : (
+                            null
+                        )}
                         </div>
 
                         <div role={"main"}>
@@ -958,25 +1139,39 @@ class Problem extends React.Component {
                                                     variant="subtitle1"
                                                     style={{
                                                         fontWeight: 800,
+                                                        display: "flex",
+                                                        alignItems: "center",
+                                                        gap: 8,
                                                     }}
                                                 >
-                                                    {renderText(
-                                                        step.stepTitle,
-                                                        problem.id,
-                                                        chooseVariables(
-                                                            Object.assign(
-                                                                {},
-                                                                problem.variabilization,
-                                                                step.variabilization
+                                                    <span style={{ minWidth: 0 }}>
+                                                        {renderText(
+                                                            step.stepTitle,
+                                                            problem.id,
+                                                            chooseVariables(
+                                                                Object.assign(
+                                                                    {},
+                                                                    problem.variabilization,
+                                                                    step.variabilization
+                                                                ),
+                                                                seed
                                                             ),
-                                                            seed
-                                                        ),
-                                                        this.context
+                                                            this.context
+                                                        )}
+                                                    </span>
+                                                    {this.enableTTS && this.stepTTSPlayers[idx] && (
+                                                        <TTSButtons
+                                                            playing={this.state.ttsPlayingStep === idx}
+                                                            onToggle={(e) => { e.stopPropagation(); this.stepTTSPlayers[idx].togglePlayPause(); }}
+                                                            onReplay={(e) => { e.stopPropagation(); this.stepTTSPlayers[idx].replay(); }}
+                                                            disabled={!this.stepTTSPlayers[idx].isReady()}
+                                                        />
                                                     )}
                                                 </Typography>
                                             </AccordionSummary>
 
                                                 <ProblemCardWrapper
+                                                    enableTTS={this.enableTTS}
                                                     problemID={problem.id}
                                                     step={step}
                                                     index={idx}
@@ -985,6 +1180,7 @@ class Problem extends React.Component {
                                                     problemVars={problem.variabilization}
                                                     lesson={problem.lesson}
                                                     courseName={problem.courseName}
+                                                    getMasteryData={this.getMasteryData}
                                                     problemTitle={problem.title}
                                                     problemSubTitle={problem.body}
                                                     giveStuFeedback={this.giveStuFeedback}
@@ -1316,6 +1512,72 @@ class Problem extends React.Component {
                             <About />
                         </Popup> */}
                     </div>
+
+                    {this.props.showFeedback && (
+                        <div
+                            className="Feedback"
+                            style={{
+                                paddingTop: 16,
+                                paddingBottom: 24,
+                            }}
+                        >
+                            <center>
+                                <h1>{translate('problem.Feedback')}</h1>
+                            </center>
+                            <div className={classes.textBox}>
+                                <div className={classes.textBoxHeader}>
+                                    <center>
+                                        {this.props.feedbackSubmitted
+                                            ? translate('problem.Thanks')
+                                            : translate('problem.Description')}
+                                    </center>
+                                </div>
+                                {this.props.feedbackSubmitted ? (
+                                    <Spacer />
+                                ) : (
+                                    <Grid container spacing={0}>
+                                        <Grid item xs={1} sm={2} md={2} key={1} />
+                                        <Grid item xs={10} sm={8} md={8} key={2}>
+                                            <TextField
+                                                id="outlined-multiline-flexible"
+                                                label={translate('problem.Response')}
+                                                multiline
+                                                fullWidth
+                                                minRows="6"
+                                                maxRows="20"
+                                                value={this.props.feedback || ""}
+                                                onChange={(event) => this.props.onFeedbackChange?.(event.target.value)}
+                                                className={classes.textField}
+                                                margin="normal"
+                                                variant="outlined"
+                                            />
+                                        </Grid>
+                                        <Grid item xs={1} sm={2} md={2} key={3} />
+                                    </Grid>
+                                )}
+                            </div>
+                            {this.props.feedbackSubmitted ? (
+                                ""
+                            ) : (
+                                <div className="submitFeedback">
+                                    <Grid container spacing={0}>
+                                        <Grid item xs={3} sm={3} md={5} key={1} />
+                                        <Grid item xs={6} sm={6} md={2} key={2}>
+                                            <Button
+                                                className={classes.button}
+                                                onClick={this.props.submitFeedback}
+                                                style={{ width: "100%" }}
+                                                disabled={(this.props.feedback || "").trim() === ""}
+                                            >
+                                                {translate('problem.Submit')}
+                                            </Button>
+                                        </Grid>
+                                        <Grid item xs={3} sm={3} md={5} key={3} />
+                                    </Grid>
+                                </div>
+                            )}
+                        </div>
+                    )}
 
 
                     {/* {this.state.showFeedback ? (

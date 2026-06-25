@@ -330,7 +330,7 @@ const styles = (theme) => ({
         height: 20,
         cursor: 'nwse-resize',
         zIndex: 10,
-    },
+    }
 });
 
 class AgentChatbox extends React.Component {

@@ -110,6 +110,15 @@ OATutor can use Firebase to persistently store log data.
 3. Centralized skill model - `src/content-sources/*/skillModel.json`
 4. Data logging/collection - Based off of the Cognitive Tutor KDD dataset.
 5. User login/registration - JSON Web Tokens
+6. Text-to-Speech (TTS) for hints, steps, and problem body using SRE-converted text and AWS Lambda (optional)
+
+### \[Optional\] Text-to-Speech (TTS)
+
+TTS uses pre-computed `pacedSpeech` fields (LaTeX → speech via SRE) and an AWS Lambda endpoint for audio.
+
+- **Generate speech text:** `npm run process-tts` (or `process-tts:force` / `process-tts:dry-run`). Writes `pacedSpeech` into hint, step, and problem JSON under `src/content-sources/oatutor/content-pool/`.
+- **Lambda:** Set `TTS_API_URL` in `src/config/config.js` to your Lambda Function URL. The frontend sends `{ segments: string[] }` and expects `{ audios: base64[] }`.
+- **Frontend:** Problem body, step title/body, and hints use `pacedSpeech` when present; otherwise a basic LaTeX-to-readable fallback is used.
 
 ## Technologies Used
 
@@ -597,3 +606,5 @@ mastery. Ties (of equal mastery) in the heuristic selection algorithm are broken
 - **giveHintOnIncorrect:** controls whether an incorrect response should automatically force the user into the hint pathway
 - **keepMCOrder:** controls whether to preserve the order of MCQ choices in the spreadsheet
 - **enableCompletionMode:** controls whether the student finishes the lesson once mastery threshold is reached or once all problems exhausted
+- **enableTTS:** enables text-to-speech functionality and buttons displayed
+- **chat_display_mode:** Toggles chatbot with *Off: (chatbot disabled)* and *Window: (interactive chatbot window)*

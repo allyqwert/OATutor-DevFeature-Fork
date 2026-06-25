@@ -12,6 +12,7 @@ import crypto from "crypto";
 dotenv.config();
 
 const dynamoClient = new AWS.DynamoDB.DocumentClient();
+const s3 = new AWS.S3();
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 function sha256Hex(s) {
@@ -210,6 +211,48 @@ export const handler = awslambda.streamifyResponse(
             if (response) {
                 await updateConversationHistory(sessionId, safeUserMessage, response);
             }
+
+//             // Append full transcript to S3 (research logging).
+//             const transcriptBucket = process.env.TRANSCRIPT_BUCKET;
+//             const date = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+//             const turnKey = (role, ts) =>
+//                 `transcripts/${date}/sessionId=${sessionId}/turnId=${turnId ?? "na"}/${ts}-${role}.jsonl`;
+//             const common = {
+//                 sessionId,
+//                 turnId,
+//                 userIdHash,
+//                 problemId: problemContext?.problemID,
+//                 stepId: problemContext?.currentStep?.id,
+//                 courseName: problemContext?.courseName,
+//                 promptHash,
+//                 condition,
+//                 lessonId,
+//                 chatPrompt,
+//                 chatDisplayMode,
+//             };
+//             // User line (do not store images bytes; only metadata).
+//             await writeTranscriptLine({
+//                 bucket: transcriptBucket,
+//                 key: turnKey("user", startedAt),
+//                 lineObj: {
+//                     ...common,
+//                     role: "user",
+//                     content: userMessage,
+//                     imagesCount,
+//                     timestampMs: startedAt,
+//                 },
+//             });
+//             // Assistant line.
+//             await writeTranscriptLine({
+//                 bucket: transcriptBucket,
+//                 key: turnKey("assistant", nowMs()),
+//                 lineObj: {
+//                     ...common,
+//                     role: "assistant",
+//                     content: response,
+//                     timestampMs: nowMs(),
+//                 },
+//             });
 
             logEvent({
                 eventType: "turn_completed",
