@@ -17,7 +17,7 @@ import { NavLink } from "react-router-dom";
 import { agentHelper } from "./AgentHelper";
 import { increment } from "../Firebase";
 import withTranslation from "../../util/withTranslation.js"
-import raiseHandIcon from "../../assets/raise.svg";
+import lightbulbIcon from "../../assets/lightbulb.svg";
 import avatar from "../../assets/avatar_default_state.svg";
 import TTSPlayer from "../../util/ttsPlayer.js";
 import TTSButtons from "./TTSButtons.js";
